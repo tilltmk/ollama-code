@@ -40,6 +40,8 @@ export class EnhancedREPL {
   private orchestrator: SubAgentOrchestrator | null = null;
   private lastSigintTime: number = 0;
   private enableSubAgents: boolean = false;
+  private multilineMode: boolean = false;
+  private multilineBuffer: string[] = [];
 
   constructor(options: REPLOptions = {}) {
     this.verbose = options.verbose !== undefined ? options.verbose : true;
@@ -183,6 +185,7 @@ For very long tasks that might timeout, use the callback loop system.`;
     console.log(chalk.gray('  /model        Change current model'));
     console.log(chalk.gray('  /verbose      Toggle verbose mode'));
     console.log(chalk.gray('  /thinking     Toggle thinking display'));
+    console.log(chalk.gray('  /md           Enter multi-line markdown mode'));
     console.log(chalk.gray('  /load <file>  Load and process MD file'));
     console.log(chalk.gray('  /stats        Show session statistics'));
     console.log(chalk.gray('  /tools        Show available tools'));
@@ -296,6 +299,11 @@ For very long tasks that might timeout, use the callback loop system.`;
       return true;
     }
 
+    if (trimmed === '/md' || trimmed === '/multiline') {
+      this.enterMultilineMode();
+      return true;
+    }
+
     if (trimmed.startsWith('/load')) {
       const parts = line.split(' ');
       if (parts.length < 2) {
@@ -335,10 +343,7 @@ For very long tasks that might timeout, use the callback loop system.`;
           // Display thinking if available and enabled
           const thinking = this.agent.getLastThinking();
           if (thinking && this.showThinking) {
-            console.log(chalk.blue.bold('\n💭 Thinking:'));
-            console.log(chalk.blue('─'.repeat(50)));
-            console.log(chalk.blueBright(thinking));
-            console.log(chalk.blue('─'.repeat(50)));
+            this.displayThinking(thinking);
           }
 
           console.log(chalk.white('\n' + response));
@@ -346,9 +351,9 @@ For very long tasks that might timeout, use the callback loop system.`;
           // Update stats
           this.updateStats(response, toolCallsMade);
 
-          // Show quick stats if verbose
+          // Show detailed stats if verbose
           if (this.verbose) {
-            console.log(chalk.gray(`\n[Stats] Tokens (est.): ${Math.ceil(response.length / 4)} | Tools used: ${toolCallsMade} | Total saved: $${this.stats.claudeCostSaved.toFixed(4)}`));
+            this.displayDetailedStats(response, duration, toolCallsMade);
           }
 
           console.log();
@@ -416,6 +421,149 @@ For very long tasks that might timeout, use the callback loop system.`;
   }
 
   /**
+   * Display detailed stats after a request
+   */
+  private displayDetailedStats(response: string, duration: number, toolCallsMade: number): void {
+    const tokens = Math.ceil(response.length / 4);
+    const tokensPerSec = Math.round(tokens / (duration / 1000));
+    const costSaved = (tokens / 1_000_000) * 3.0;
+
+    const boxWidth = 70;
+    console.log(chalk.gray('\n' + '─'.repeat(boxWidth)));
+    console.log(chalk.cyan.bold('📊 Request Statistics'));
+    console.log(chalk.gray('─'.repeat(boxWidth)));
+
+    // Performance metrics
+    console.log(chalk.yellow('  ⚡ Performance:'));
+    console.log(chalk.gray(`     • Response time: ${(duration / 1000).toFixed(2)}s`));
+    console.log(chalk.gray(`     • Speed: ~${tokensPerSec} tokens/sec`));
+
+    // Token usage
+    console.log(chalk.yellow('\n  🔤 Token Usage:'));
+    console.log(chalk.gray(`     • This request: ${tokens.toLocaleString()} tokens`));
+    console.log(chalk.gray(`     • Session total: ${this.stats.totalTokens.toLocaleString()} tokens`));
+
+    // Tool usage
+    if (toolCallsMade > 0) {
+      console.log(chalk.yellow('\n  🔧 Tool Usage:'));
+      console.log(chalk.gray(`     • Tools called: ${toolCallsMade}`));
+      console.log(chalk.gray(`     • Session total: ${this.stats.toolCalls} tool calls`));
+    }
+
+    // Cost savings
+    console.log(chalk.yellow('\n  💰 Cost Savings (vs Claude Sonnet):'));
+    console.log(chalk.green(`     • This request: $${costSaved.toFixed(6)} saved`));
+    console.log(chalk.green(`     • Session total: $${this.stats.claudeCostSaved.toFixed(4)} saved`));
+
+    console.log(chalk.gray('─'.repeat(boxWidth)));
+  }
+
+  /**
+   * Display thinking in an elegant format
+   */
+  private displayThinking(thinking: string): void {
+    const terminalWidth = process.stdout.columns || 80;
+    const boxWidth = Math.min(terminalWidth - 4, 80);
+
+    console.log(chalk.blue.bold('\n╔═' + '═'.repeat(boxWidth - 2) + '═╗'));
+    console.log(chalk.blue.bold('║') + chalk.cyan.bold(' 💭 Thinking Process'.padEnd(boxWidth, ' ')) + chalk.blue.bold('║'));
+    console.log(chalk.blue.bold('╠═' + '═'.repeat(boxWidth - 2) + '═╣'));
+
+    // Wrap and display thinking content
+    const lines = thinking.split('\n');
+    for (const line of lines) {
+      if (line.length <= boxWidth - 4) {
+        console.log(chalk.blue.bold('║ ') + chalk.blueBright(line.padEnd(boxWidth - 2, ' ')) + chalk.blue.bold('║'));
+      } else {
+        // Word wrap long lines
+        const words = line.split(' ');
+        let currentLine = '';
+        for (const word of words) {
+          if ((currentLine + word).length <= boxWidth - 4) {
+            currentLine += (currentLine ? ' ' : '') + word;
+          } else {
+            console.log(chalk.blue.bold('║ ') + chalk.blueBright(currentLine.padEnd(boxWidth - 2, ' ')) + chalk.blue.bold('║'));
+            currentLine = word;
+          }
+        }
+        if (currentLine) {
+          console.log(chalk.blue.bold('║ ') + chalk.blueBright(currentLine.padEnd(boxWidth - 2, ' ')) + chalk.blue.bold('║'));
+        }
+      }
+    }
+
+    console.log(chalk.blue.bold('╚═' + '═'.repeat(boxWidth - 2) + '═╝'));
+  }
+
+  /**
+   * Enter multiline mode for MD input
+   */
+  private enterMultilineMode(): void {
+    this.multilineMode = true;
+    this.multilineBuffer = [];
+    console.log(chalk.yellow.bold('\n📝 Multi-line Mode Activated'));
+    console.log(chalk.gray('  • Enter your markdown content'));
+    console.log(chalk.gray('  • Type /end on a new line to finish'));
+    console.log(chalk.gray('  • Type /cancel to abort\n'));
+    this.rl.setPrompt(chalk.cyan('  │ '));
+    this.rl.prompt();
+  }
+
+  /**
+   * Process multiline buffer
+   */
+  private async processMultilineBuffer(): Promise<void> {
+    const content = this.multilineBuffer.join('\n');
+    this.multilineMode = false;
+    this.multilineBuffer = [];
+    this.rl.setPrompt(chalk.cyan.bold('💻 ollama-code ❯ '));
+
+    console.log(chalk.green(`✓ Received ${content.length} characters`));
+    console.log(chalk.gray('Processing...\n'));
+
+    // Process with agent
+    const spinner = ora({
+      text: 'Thinking...',
+      spinner: 'dots'
+    }).start();
+
+    try {
+      const startTime = Date.now();
+      const response = await this.agent.run(content, {
+        verbose: this.verbose,
+      });
+
+      const duration = Date.now() - startTime;
+      const history = this.agent.getHistory();
+      const toolCallsMade = history.filter(msg => msg.tool_calls && msg.tool_calls.length > 0).length;
+
+      spinner.succeed(`Completed in ${(duration / 1000).toFixed(1)}s`);
+
+      // Display thinking if available and enabled
+      const thinking = this.agent.getLastThinking();
+      if (thinking && this.showThinking) {
+        this.displayThinking(thinking);
+      }
+
+      console.log(chalk.white('\n' + response));
+
+      // Update stats
+      this.updateStats(response, toolCallsMade);
+
+      // Show detailed stats if verbose
+      if (this.verbose) {
+        this.displayDetailedStats(response, duration, toolCallsMade);
+      }
+
+      console.log();
+    } catch (error) {
+      spinner.fail('Error occurred');
+      console.error(chalk.red('\n❌ Error:'), error);
+      console.log();
+    }
+  }
+
+  /**
    * Execute a single command and exit (non-interactive mode)
    */
   async executeSingleCommand(prompt: string): Promise<void> {
@@ -431,29 +579,24 @@ For very long tasks that might timeout, use the callback loop system.`;
       process.exit(1);
     }
 
-    // Process the single command
-    const spinner = ora({
-      text: 'Processing...',
-      spinner: 'dots'
-    }).start();
+    // Process the single command with verbose output
+    console.log(chalk.cyan('\n🚀 Starting execution...\n'));
 
     try {
       const startTime = Date.now();
 
       const response = await this.agent.run(prompt, {
-        verbose: this.verbose,
+        verbose: true, // Always show verbose output in single-command mode
+        maxIterations: 50,
       });
 
       const duration = Date.now() - startTime;
-      spinner.succeed(`Completed in ${(duration / 1000).toFixed(1)}s`);
+      console.log(chalk.green(`\n✅ Completed in ${(duration / 1000).toFixed(1)}s`));
 
       // Display thinking if available and enabled
       const thinking = this.agent.getLastThinking();
       if (thinking && this.showThinking) {
-        console.log(chalk.blue.bold('\n💭 Thinking:'));
-        console.log(chalk.blue('─'.repeat(50)));
-        console.log(chalk.blueBright(thinking));
-        console.log(chalk.blue('─'.repeat(50)));
+        this.displayThinking(thinking);
       }
 
       console.log(chalk.white('\n' + response + '\n'));
@@ -461,8 +604,7 @@ For very long tasks that might timeout, use the callback loop system.`;
       // Exit cleanly
       process.exit(0);
     } catch (error) {
-      spinner.fail('Error occurred');
-      console.error(chalk.red('\n❌ Error:'), error);
+      console.error(chalk.red('\n❌ Error occurred:'), error);
       process.exit(1);
     }
   }
@@ -494,6 +636,26 @@ For very long tasks that might timeout, use the callback loop system.`;
 
     this.rl.on('line', async (line) => {
       const trimmed = line.trim();
+
+      // Handle multiline mode
+      if (this.multilineMode) {
+        if (trimmed === '/end') {
+          await this.processMultilineBuffer();
+          this.rl.prompt();
+          return;
+        } else if (trimmed === '/cancel') {
+          this.multilineMode = false;
+          this.multilineBuffer = [];
+          this.rl.setPrompt(chalk.cyan.bold('💻 ollama-code ❯ '));
+          console.log(chalk.yellow('✗ Multi-line input cancelled'));
+          this.rl.prompt();
+          return;
+        } else {
+          this.multilineBuffer.push(line);
+          this.rl.prompt();
+          return;
+        }
+      }
 
       if (!trimmed) {
         this.rl.prompt();
@@ -529,10 +691,7 @@ For very long tasks that might timeout, use the callback loop system.`;
         // Display thinking if available and enabled
         const thinking = this.agent.getLastThinking();
         if (thinking && this.showThinking) {
-          console.log(chalk.blue.bold('\n💭 Thinking:'));
-          console.log(chalk.blue('─'.repeat(50)));
-          console.log(chalk.blueBright(thinking));
-          console.log(chalk.blue('─'.repeat(50)));
+          this.displayThinking(thinking);
         }
 
         console.log(chalk.white('\n' + response));
@@ -540,9 +699,9 @@ For very long tasks that might timeout, use the callback loop system.`;
         // Update stats
         this.updateStats(response, toolCallsMade);
 
-        // Show quick stats if verbose
+        // Show detailed stats if verbose
         if (this.verbose) {
-          console.log(chalk.gray(`\n[Stats] Tokens (est.): ${Math.ceil(response.length / 4)} | Tools used: ${toolCallsMade} | Total saved: $${this.stats.claudeCostSaved.toFixed(4)}`));
+          this.displayDetailedStats(response, duration, toolCallsMade);
         }
 
         console.log();

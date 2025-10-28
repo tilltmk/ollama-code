@@ -113,7 +113,7 @@ export class Agent {
    * Run the agent with a user message
    */
   async run(userMessage: string, agentConfig: AgentConfig = {}): Promise<string> {
-    const maxIterations = agentConfig.maxIterations || 10;
+    const maxIterations = agentConfig.maxIterations || 50; // Increased from 10 to 50
     const maxRetries = agentConfig.maxRetries || 3;
     const model = agentConfig.model || this.modelManager.selectModelForTask('code');
     const verbose = agentConfig.verbose || false;
@@ -186,7 +186,27 @@ export class Agent {
       // Check if there are tool calls
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         if (verbose) {
-          console.log(`Tool calls: ${assistantMessage.tool_calls.map(tc => tc.function.name).join(', ')}`);
+          console.log(`\n🔧 Executing ${assistantMessage.tool_calls.length} tool(s):`);
+          assistantMessage.tool_calls.forEach((tc, idx) => {
+            console.log(`\n  ${idx + 1}. ${tc.function.name}`);
+            try {
+              const args = JSON.parse(tc.function.arguments);
+              const argKeys = Object.keys(args);
+              if (argKeys.length > 0) {
+                console.log(`     Arguments:`);
+                argKeys.forEach(key => {
+                  const value = args[key];
+                  const displayValue = typeof value === 'string' && value.length > 100
+                    ? value.substring(0, 100) + '...'
+                    : JSON.stringify(value);
+                  console.log(`       ${key}: ${displayValue}`);
+                });
+              }
+            } catch (e) {
+              console.log(`     Arguments: ${tc.function.arguments}`);
+            }
+          });
+          console.log();
         }
 
         // Execute all tool calls with retry logic
@@ -199,6 +219,24 @@ export class Agent {
           results.filter(r => r.error).forEach(r => {
             console.log(`  - ${r.error}`);
           });
+        }
+
+        // Show tool results in verbose mode
+        if (verbose) {
+          console.log('📊 Tool Results:');
+          results.forEach((result, idx) => {
+            console.log(`\n  ${idx + 1}. ${result.error ? '❌ Error' : '✅ Success'}`);
+            if (result.error) {
+              console.log(`     ${result.error}`);
+            } else if (result.result) {
+              const resultStr = JSON.stringify(result.result, null, 2);
+              const displayResult = resultStr.length > 200
+                ? resultStr.substring(0, 200) + '...'
+                : resultStr;
+              console.log(`     ${displayResult}`);
+            }
+          });
+          console.log();
         }
 
         // Add tool results to conversation
