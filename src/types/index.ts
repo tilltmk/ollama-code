@@ -5,6 +5,7 @@ export interface Message {
   content: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  thinking?: string; // Model's reasoning/thinking process
 }
 
 export interface ToolCall {
