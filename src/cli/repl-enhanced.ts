@@ -16,6 +16,7 @@ export interface REPLOptions {
   verbose?: boolean;
   enableSubAgents?: boolean;
   config?: Config;
+  showThinking?: boolean;
 }
 
 interface SessionStats {
@@ -33,6 +34,7 @@ export class EnhancedREPL {
   private configManager: ConfigManager;
   private rl: readline.Interface;
   private verbose: boolean = false;
+  private showThinking: boolean = true; // Show thinking by default
   private stats: SessionStats;
   private callbackLoop: CallbackLoop;
   private orchestrator: SubAgentOrchestrator | null = null;
@@ -41,6 +43,7 @@ export class EnhancedREPL {
 
   constructor(options: REPLOptions = {}) {
     this.verbose = options.verbose !== undefined ? options.verbose : true;
+    this.showThinking = options.showThinking !== undefined ? options.showThinking : true;
     this.enableSubAgents = options.enableSubAgents || false;
     this.configManager = new ConfigManager();
 
@@ -175,15 +178,17 @@ For very long tasks that might timeout, use the callback loop system.`;
     console.log(chalk.green.bold(`  You save: $3.00 per 1M tokens!\n`));
 
     console.log(chalk.magenta.bold('⌨️  Commands:'));
-    console.log(chalk.gray('  /help        Show this help'));
-    console.log(chalk.gray('  /models      List available models'));
-    console.log(chalk.gray('  /model       Change current model'));
-    console.log(chalk.gray('  /verbose     Toggle verbose mode'));
-    console.log(chalk.gray('  /stats       Show session statistics'));
-    console.log(chalk.gray('  /tools       Show available tools'));
-    console.log(chalk.gray('  /clear       Clear conversation history'));
-    console.log(chalk.gray('  /reset       Reset session stats'));
-    console.log(chalk.gray('  /exit        Exit REPL\n'));
+    console.log(chalk.gray('  /help         Show this help'));
+    console.log(chalk.gray('  /models       List available models'));
+    console.log(chalk.gray('  /model        Change current model'));
+    console.log(chalk.gray('  /verbose      Toggle verbose mode'));
+    console.log(chalk.gray('  /thinking     Toggle thinking display'));
+    console.log(chalk.gray('  /load <file>  Load and process MD file'));
+    console.log(chalk.gray('  /stats        Show session statistics'));
+    console.log(chalk.gray('  /tools        Show available tools'));
+    console.log(chalk.gray('  /clear        Clear conversation history'));
+    console.log(chalk.gray('  /reset        Reset session stats'));
+    console.log(chalk.gray('  /exit         Exit REPL\n'));
   }
 
   /**
@@ -285,6 +290,79 @@ For very long tasks that might timeout, use the callback loop system.`;
       return true;
     }
 
+    if (trimmed === '/thinking') {
+      this.showThinking = !this.showThinking;
+      console.log(chalk.yellow(`🧠 Thinking display: ${this.showThinking ? chalk.green('ON') : chalk.red('OFF')}`));
+      return true;
+    }
+
+    if (trimmed.startsWith('/load')) {
+      const parts = line.split(' ');
+      if (parts.length < 2) {
+        console.log(chalk.red('✗ Usage: /load <file>'));
+        return true;
+      }
+      const filePath = parts.slice(1).join(' ').trim();
+
+      try {
+        const fs = await import('fs/promises');
+        const path = await import('path');
+        const resolvedPath = path.resolve(filePath);
+        const content = await fs.readFile(resolvedPath, 'utf-8');
+
+        // Process the file content as a prompt
+        console.log(chalk.green(`✓ Loaded ${filePath} (${content.length} chars)`));
+        console.log(chalk.gray('Processing...\n'));
+
+        // Process with agent
+        const spinner = ora({
+          text: 'Thinking...',
+          spinner: 'dots'
+        }).start();
+
+        try {
+          const startTime = Date.now();
+          const response = await this.agent.run(content, {
+            verbose: this.verbose,
+          });
+
+          const duration = Date.now() - startTime;
+          const history = this.agent.getHistory();
+          const toolCallsMade = history.filter(msg => msg.tool_calls && msg.tool_calls.length > 0).length;
+
+          spinner.succeed(`Completed in ${(duration / 1000).toFixed(1)}s`);
+
+          // Display thinking if available and enabled
+          const thinking = this.agent.getLastThinking();
+          if (thinking && this.showThinking) {
+            console.log(chalk.blue.bold('\n💭 Thinking:'));
+            console.log(chalk.blue('─'.repeat(50)));
+            console.log(chalk.blueBright(thinking));
+            console.log(chalk.blue('─'.repeat(50)));
+          }
+
+          console.log(chalk.white('\n' + response));
+
+          // Update stats
+          this.updateStats(response, toolCallsMade);
+
+          // Show quick stats if verbose
+          if (this.verbose) {
+            console.log(chalk.gray(`\n[Stats] Tokens (est.): ${Math.ceil(response.length / 4)} | Tools used: ${toolCallsMade} | Total saved: $${this.stats.claudeCostSaved.toFixed(4)}`));
+          }
+
+          console.log();
+        } catch (error) {
+          spinner.fail('Error occurred');
+          console.error(chalk.red('\n❌ Error:'), error);
+          console.log();
+        }
+      } catch (error) {
+        console.log(chalk.red(`✗ Failed to load file: ${error instanceof Error ? error.message : String(error)}`));
+      }
+      return true;
+    }
+
     if (trimmed === '/stats') {
       this.displayStats();
       return true;
@@ -369,6 +447,15 @@ For very long tasks that might timeout, use the callback loop system.`;
       const duration = Date.now() - startTime;
       spinner.succeed(`Completed in ${(duration / 1000).toFixed(1)}s`);
 
+      // Display thinking if available and enabled
+      const thinking = this.agent.getLastThinking();
+      if (thinking && this.showThinking) {
+        console.log(chalk.blue.bold('\n💭 Thinking:'));
+        console.log(chalk.blue('─'.repeat(50)));
+        console.log(chalk.blueBright(thinking));
+        console.log(chalk.blue('─'.repeat(50)));
+      }
+
       console.log(chalk.white('\n' + response + '\n'));
 
       // Exit cleanly
@@ -438,6 +525,15 @@ For very long tasks that might timeout, use the callback loop system.`;
         const toolCallsMade = history.filter(msg => msg.tool_calls && msg.tool_calls.length > 0).length;
 
         spinner.succeed(`Completed in ${(duration / 1000).toFixed(1)}s`);
+
+        // Display thinking if available and enabled
+        const thinking = this.agent.getLastThinking();
+        if (thinking && this.showThinking) {
+          console.log(chalk.blue.bold('\n💭 Thinking:'));
+          console.log(chalk.blue('─'.repeat(50)));
+          console.log(chalk.blueBright(thinking));
+          console.log(chalk.blue('─'.repeat(50)));
+        }
 
         console.log(chalk.white('\n' + response));
 

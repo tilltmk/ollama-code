@@ -12,6 +12,34 @@ export interface AgentConfig {
   maxRetries?: number; // Max retries for failed tool calls
 }
 
+/**
+ * Extract thinking/reasoning content from message
+ * Supports multiple formats: <thinking>...</thinking>, <reasoning>...</reasoning>, etc.
+ */
+function extractThinking(content: string): { thinking: string | undefined; cleanContent: string } {
+  const thinkingPatterns = [
+    /<thinking>([\s\S]*?)<\/thinking>/i,
+    /<reasoning>([\s\S]*?)<\/reasoning>/i,
+    /<thought>([\s\S]*?)<\/thought>/i,
+    /\[THINKING\]([\s\S]*?)\[\/THINKING\]/i,
+    /\[REASONING\]([\s\S]*?)\[\/REASONING\]/i,
+  ];
+
+  let thinking: string | undefined;
+  let cleanContent = content;
+
+  for (const pattern of thinkingPatterns) {
+    const match = content.match(pattern);
+    if (match) {
+      thinking = match[1].trim();
+      cleanContent = content.replace(pattern, '').trim();
+      break;
+    }
+  }
+
+  return { thinking, cleanContent };
+}
+
 export class Agent {
   private client: OllamaClient;
   private modelManager: ModelManager;
@@ -58,6 +86,19 @@ export class Agent {
    */
   getHistory(): Message[] {
     return this.conversationHistory;
+  }
+
+  /**
+   * Get the last thinking/reasoning from the last assistant message
+   */
+  getLastThinking(): string | undefined {
+    for (let i = this.conversationHistory.length - 1; i >= 0; i--) {
+      const msg = this.conversationHistory[i];
+      if (msg.role === 'assistant' && msg.thinking) {
+        return msg.thinking;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -125,6 +166,15 @@ export class Agent {
       }
 
       let assistantMessage = response.choices[0].message;
+
+      // Extract thinking/reasoning from content
+      if (assistantMessage.content) {
+        const { thinking, cleanContent } = extractThinking(assistantMessage.content);
+        if (thinking) {
+          assistantMessage.thinking = thinking;
+          assistantMessage.content = cleanContent;
+        }
+      }
 
       // Normalize tool calls (handle different formats)
       const knownTools = this.toolManager.getAllTools().map(t => t.name);
