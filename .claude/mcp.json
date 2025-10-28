@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ollama-code": {
+      "command": "npm",
+      "args": [
+        "run",
+        "mcp"
+      ],
+      "cwd": "/home/core/dev/bricked-code/ollama-code",
+      "description": "Ollama Code MCP Server - Local AI coding assistant with file operations, bash, grep, HTTP requests, SQLite, and sub-agent orchestration"
+    }
+  }
+}
