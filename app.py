@@ -4,7 +4,7 @@ import os
 
 app = Flask(__name__)
 
-# Datenbank initialisieren
+# Database setup
 def init_db():
     conn = sqlite3.connect('tasks.db')
     c = conn.cursor()
@@ -12,66 +12,59 @@ def init_db():
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   title TEXT NOT NULL,
                   description TEXT,
-                  completed BOOLEAN DEFAULT 0)''')
+                  completed BOOLEAN DEFAULT FALSE,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
-# Alle Aufgaben abrufen
-def get_tasks():
-    conn = sqlite3.connect('tasks.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM tasks ORDER BY id DESC")
-    tasks = c.fetchall()
-    conn.close()
-    return tasks
-
-# Eine neue Aufgabe hinzufügen
-def add_task(title, description):
-    conn = sqlite3.connect('tasks.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO tasks (title, description) VALUES (?, ?)", (title, description))
-    conn.commit()
-    conn.close()
-
-# Aufgabe als erledigt markieren
-def complete_task(task_id):
-    conn = sqlite3.connect('tasks.db')
-    c = conn.cursor()
-    c.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (task_id,))
-    conn.commit()
-    conn.close()
-
-# Aufgabe löschen
-def delete_task(task_id):
-    conn = sqlite3.connect('tasks.db')
-    c = conn.cursor()
-    c.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-    conn.commit()
-    conn.close()
+# Initialize database on startup
+init_db()
 
 @app.route('/')
 def index():
-    tasks = get_tasks()
+    conn = sqlite3.connect('tasks.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute('SELECT * FROM tasks ORDER BY created_at DESC')
+    tasks = c.fetchall()
+    conn.close()
     return render_template('index.html', tasks=tasks)
 
 @app.route('/add', methods=['POST'])
-def add():
+def add_task():
     title = request.form['title']
     description = request.form['description']
-    if title:
-        add_task(title, description)
+    
+    conn = sqlite3.connect('tasks.db')
+    c = conn.cursor()
+    c.execute('INSERT INTO tasks (title, description) VALUES (?, ?)', (title, description))
+    conn.commit()
+    conn.close()
+    
     return redirect(url_for('index'))
 
-@app.route('/complete/<int:task_id>')
-def complete(task_id):
-    complete_task(task_id)
+@app.route('/toggle/<int:task_id>')
+def toggle_task(task_id):
+    conn = sqlite3.connect('tasks.db')
+    c = conn.cursor()
+    c.execute('SELECT completed FROM tasks WHERE id = ?', (task_id,))
+    current_status = c.fetchone()[0]
+    new_status = not current_status
+    c.execute('UPDATE tasks SET completed = ? WHERE id = ?', (new_status, task_id))
+    conn.commit()
+    conn.close()
+    
     return redirect(url_for('index'))
 
 @app.route('/delete/<int:task_id>')
-def delete(task_id):
-    delete_task(task_id)
+def delete_task(task_id):
+    conn = sqlite3.connect('tasks.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
+    conn.commit()
+    conn.close()
+    
     return redirect(url_for('index'))
 
 if __name__ == '__main__':
-    init_db()
     app.run(debug=True)
