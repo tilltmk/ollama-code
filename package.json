@@ -15,8 +15,11 @@
     "start": "node dist/cli.js",
     "watch": "tsc --watch",
     "test": "vitest",
-    "link": "npm run build && npm link",
-    "unlink": "npm unlink -g ollama-code"
+    "install-global": "npm run build && npm link",
+    "update-global": "npm run build && npm link --force",
+    "uninstall-global": "npm unlink -g ollama-code",
+    "link": "npm run install-global",
+    "unlink": "npm run uninstall-global"
   },
   "keywords": [
     "ollama",

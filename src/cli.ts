@@ -18,7 +18,9 @@ program
   .description('Start interactive chat REPL or execute a single command')
   .argument('[prompt...]', 'Optional prompt to execute (if provided, runs once and exits)')
   .option('-m, --model <model>', 'Model to use (e.g., qwen3-coder:30b, gpt-oss:20b)')
-  .option('-v, --verbose', 'Enable verbose output (show tool calls)')
+  .option('-v, --verbose', 'Enable verbose output (show tool calls, enabled by default)')
+  .option('-q, --quiet', 'Disable verbose output')
+  .option('--enable-subagents', 'Enable sub-agent delegation (disabled by default)')
   .option('--url <url>', 'Ollama server URL (default: http://localhost:11434)')
   .option('-t, --temperature <number>', 'Temperature for generation (0.0-1.0)', parseFloat)
   .action(async (promptArgs: string[], options) => {
@@ -51,8 +53,15 @@ program
       configManager.update({ temperature: options.temperature });
     }
 
+    // Determine verbose mode: default is true unless --quiet is specified
+    const verbose = options.quiet ? false : true;
+
+    // Determine if sub-agents should be enabled
+    const enableSubAgents = options.enableSubagents || false;
+
     const repl = new EnhancedREPL({
-      verbose: options.verbose || false,
+      verbose,
+      enableSubAgents,
       config: configManager.get()
     });
 

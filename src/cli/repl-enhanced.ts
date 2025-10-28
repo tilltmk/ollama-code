@@ -9,11 +9,12 @@ import { CallbackLoop } from '../llm/callback-loop.js';
 import { setSubAgentOrchestrator } from '../tools/sub-agent-tool.js';
 import { setCallbackLoop } from '../tools/callback-tool.js';
 import { SubAgentOrchestrator } from '../llm/sub-agent.js';
-import { allTools } from '../tools/index.js';
+import { fileTools, grepTool, bashTool, sqliteTools, httpTools, callbackLoopTools, subAgentTool } from '../tools/index.js';
 import type { Config } from '../types/index.js';
 
 export interface REPLOptions {
   verbose?: boolean;
+  enableSubAgents?: boolean;
   config?: Config;
 }
 
@@ -34,11 +35,13 @@ export class EnhancedREPL {
   private verbose: boolean = false;
   private stats: SessionStats;
   private callbackLoop: CallbackLoop;
-  private orchestrator: SubAgentOrchestrator;
+  private orchestrator: SubAgentOrchestrator | null = null;
   private lastSigintTime: number = 0;
+  private enableSubAgents: boolean = false;
 
   constructor(options: REPLOptions = {}) {
-    this.verbose = options.verbose || false;
+    this.verbose = options.verbose !== undefined ? options.verbose : true;
+    this.enableSubAgents = options.enableSubAgents || false;
     this.configManager = new ConfigManager();
 
     // Use provided config or default
@@ -52,21 +55,32 @@ export class EnhancedREPL {
     this.modelManager = new ModelManager(config);
     this.agent = new Agent(config, this.toolManager, this.modelManager);
 
-    // Initialize orchestrator and callback loop
-    this.orchestrator = new SubAgentOrchestrator(config, this.toolManager, this.modelManager);
+    // Initialize orchestrator and callback loop only if sub-agents are enabled
+    if (this.enableSubAgents) {
+      this.orchestrator = new SubAgentOrchestrator(config, this.toolManager, this.modelManager);
+      setSubAgentOrchestrator(this.orchestrator);
+    }
+
     this.callbackLoop = new CallbackLoop(config, this.toolManager, this.modelManager, {
       verbose: this.verbose
     });
 
-    // Set instances for tools
-    setSubAgentOrchestrator(this.orchestrator);
+    // Set callback loop for tools
     setCallbackLoop(this.callbackLoop);
 
     // Ensure stdin stays open
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(false);
     }
+
+    // Prevent stdin from closing
     process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+
+    // Prevent automatic exit
+    process.stdin.on('end', () => {
+      // Do nothing - prevent exit on stdin end
+    });
 
     this.rl = readline.createInterface({
       input: process.stdin,
@@ -91,8 +105,22 @@ export class EnhancedREPL {
     // Load configuration
     await this.configManager.load();
 
-    // Register all tools
-    this.toolManager.registerTools(allTools);
+    // Register tools based on configuration
+    const tools = [
+      ...fileTools,
+      grepTool,
+      bashTool,
+      ...sqliteTools,
+      ...httpTools,
+      ...callbackLoopTools,
+    ];
+
+    // Only add sub-agent tool if enabled
+    if (this.enableSubAgents) {
+      tools.push(subAgentTool);
+    }
+
+    this.toolManager.registerTools(tools);
 
     // Initialize model manager
     await this.modelManager.initialize();
@@ -101,19 +129,21 @@ export class EnhancedREPL {
     await this.callbackLoop.initialize();
 
     // Set system prompt
+    const subAgentText = this.enableSubAgents
+      ? '\n- Sub-agent delegation (parallel task execution)\nFor complex multi-step tasks, consider using sub-agents for parallel execution.'
+      : '';
+
     const systemPrompt = `You are a helpful coding assistant powered by local Ollama models.
 You have access to:
 - File operations (read, write, edit, glob)
 - Code search (grep with regex)
-- Bash execution
-- Sub-agent delegation (parallel task execution)
+- Bash execution${subAgentText}
 - HTTP requests
 - SQLite databases
 - Callback loop system (for long-running tasks)
 
 Always use the appropriate tools to interact with the system.
 Be concise and helpful. When writing code, ensure it's correct and follows best practices.
-For complex multi-step tasks, consider using sub-agents for parallel execution.
 For very long tasks that might timeout, use the callback loop system.`;
 
     this.agent.setSystemPrompt(systemPrompt);
@@ -143,7 +173,9 @@ For very long tasks that might timeout, use the callback loop system.`;
     console.log(chalk.gray(`  • File Operations (read, write, edit, glob)`));
     console.log(chalk.gray(`  • Code Search (grep with regex)`));
     console.log(chalk.gray(`  • Bash Execution`));
-    console.log(chalk.gray(`  • Sub-Agent Delegation (parallel execution)`));
+    if (this.enableSubAgents) {
+      console.log(chalk.gray(`  • Sub-Agent Delegation (parallel execution)`));
+    }
     console.log(chalk.gray(`  • HTTP Requests (API calls)`));
     console.log(chalk.gray(`  • SQLite Database`));
     console.log(chalk.gray(`  • Callback Loop (timeout prevention)\n`));
@@ -376,6 +408,12 @@ For very long tasks that might timeout, use the callback loop system.`;
     }
 
     this.displayWelcome();
+
+    // Keep the process alive
+    const keepAlive = setInterval(() => {
+      // Do nothing, just keep the event loop alive
+    }, 1000 * 60 * 60); // Every hour
+
     this.rl.prompt();
 
     this.rl.on('line', async (line) => {
@@ -433,9 +471,18 @@ For very long tasks that might timeout, use the callback loop system.`;
     });
 
     this.rl.on('close', () => {
+      clearInterval(keepAlive);
       console.log(chalk.cyan.bold('\n👋 Goodbye!'));
       this.displayStats();
+      // Clean exit
       process.exit(0);
+    });
+
+    // Prevent readline from closing on errors
+    this.rl.on('error', (error) => {
+      console.error(chalk.red('\n❌ Readline error:'), error);
+      console.log(chalk.gray('Attempting to recover...'));
+      this.rl.prompt();
     });
 
     // Handle SIGINT (Ctrl+C) gracefully with double-press to exit
