@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aufgabenliste</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="text-center mb-5">Meine Aufgaben</h1>
+        
+        <!-- Aufgabe hinzufügen -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Neue Aufgabe hinzufügen</h5>
+                <form method="POST" action="/add">
+                    <div class="mb-3">
+                        <label for="title" class="form-label">Titel</label>
+                        <input type="text" class="form-control" id="title" name="title" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="description" class="form-label">Beschreibung</label>
+                        <textarea class="form-control" id="description" name="description" rows="2"></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Aufgabe hinzufügen</button>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Aufgabenliste -->
+        <div class="row">
+            <div class="col-md-12">
+                <h3>Aufgaben</h3>
+                {% if tasks %}
+                    <div class="list-group">
+                        {% for task in tasks %}
+                        <div class="list-group-item d-flex justify-content-between align-items-center {% if task[3] %}list-group-item-success{% endif %}">
+                            <div>
+                                <h5 class="mb-1 {% if task[3] %}text-decoration-line-through{% endif %}">{{ task[1] }}</h5>
+                                {% if task[2] %}
+                                <p class="mb-1">{{ task[2] }}</p>
+                                {% endif %}
+                            </div>
+                            <div>
+                                {% if not task[3] %}
+                                <a href="/complete/{{ task[0] }}" class="btn btn-success btn-sm me-2">Erledigt</a>
+                                {% endif %}
+                                <a href="/delete/{{ task[0] }}" class="btn btn-danger btn-sm">Löschen</a>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <p class="text-muted">Keine Aufgaben vorhanden</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
