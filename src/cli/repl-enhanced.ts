@@ -69,24 +69,13 @@ export class EnhancedREPL {
     setCallbackLoop(this.callbackLoop);
 
     // Ensure stdin stays open
-    if (process.stdin.isTTY) {
-      process.stdin.setRawMode(false);
-    }
-
-    // Prevent stdin from closing
     process.stdin.resume();
-    process.stdin.setEncoding('utf8');
-
-    // Prevent automatic exit
-    process.stdin.on('end', () => {
-      // Do nothing - prevent exit on stdin end
-    });
 
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
       prompt: chalk.cyan.bold('💻 ollama-code ❯ '),
-      terminal: process.stdin.isTTY && process.stdout.isTTY,
+      terminal: true,
     });
 
     this.stats = {
