@@ -35,6 +35,7 @@ export class EnhancedREPL {
   private stats: SessionStats;
   private callbackLoop: CallbackLoop;
   private orchestrator: SubAgentOrchestrator;
+  private lastSigintTime: number = 0;
 
   constructor(options: REPLOptions = {}) {
     this.verbose = options.verbose || false;
@@ -61,10 +62,17 @@ export class EnhancedREPL {
     setSubAgentOrchestrator(this.orchestrator);
     setCallbackLoop(this.callbackLoop);
 
+    // Ensure stdin stays open
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+    process.stdin.resume();
+
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
       prompt: chalk.cyan.bold('💻 ollama-code ❯ '),
+      terminal: process.stdin.isTTY && process.stdout.isTTY,
     });
 
     this.stats = {
@@ -319,7 +327,9 @@ For very long tasks that might timeout, use the callback loop system.`;
       initSpinner.succeed('Ready!');
     } catch (error) {
       initSpinner.fail('Initialization failed');
-      throw error;
+      console.error(chalk.red('Error during initialization:'), error);
+      console.error(chalk.yellow('\nPlease check your configuration and try again.'));
+      process.exit(1);
     }
 
     this.displayWelcome();
@@ -383,6 +393,42 @@ For very long tasks that might timeout, use the callback loop system.`;
       console.log(chalk.cyan.bold('\n👋 Goodbye!'));
       this.displayStats();
       process.exit(0);
+    });
+
+    // Handle SIGINT (Ctrl+C) gracefully with double-press to exit
+    process.on('SIGINT', () => {
+      const now = Date.now();
+      if (now - this.lastSigintTime < 2000) {
+        // Double SIGINT within 2 seconds - exit
+        console.log(chalk.cyan.bold('\n\n👋 Goodbye!'));
+        this.displayStats();
+        process.exit(0);
+      } else {
+        // Single SIGINT - show warning
+        this.lastSigintTime = now;
+        console.log(chalk.yellow('\n\n🛑 Press Ctrl+C again within 2 seconds to exit, or type /exit'));
+        this.rl.prompt();
+      }
+    });
+
+    // Prevent immediate exit on SIGTERM
+    process.on('SIGTERM', () => {
+      console.log(chalk.yellow('\n\n🛑 Received SIGTERM. Exiting gracefully...'));
+      this.rl.close();
+    });
+
+    // Handle unhandled promise rejections
+    process.on('unhandledRejection', (reason) => {
+      console.error(chalk.red('\n❌ Unhandled Promise Rejection:'), reason);
+      console.log(chalk.gray('The REPL will continue running. Please report this issue if it persists.\n'));
+      this.rl.prompt();
+    });
+
+    // Handle uncaught exceptions
+    process.on('uncaughtException', (error) => {
+      console.error(chalk.red('\n❌ Uncaught Exception:'), error);
+      console.log(chalk.gray('The REPL will continue running. Please report this issue if it persists.\n'));
+      this.rl.prompt();
     });
   }
 }
