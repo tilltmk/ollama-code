@@ -5,11 +5,13 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "ollama-code": "dist/cli.js"
+    "ollama-code": "dist/cli.js",
+    "ollama-code-mcp": "dist/mcp-server.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
+    "mcp": "tsx src/mcp-server.ts",
     "start": "node dist/cli.js",
     "watch": "tsc --watch",
     "test": "vitest",
@@ -27,6 +29,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.2",
     "@types/better-sqlite3": "^7.6.13",
     "better-sqlite3": "^12.4.1",
     "chalk": "^5.3.0",
@@ -41,7 +44,7 @@
     "ora": "^8.2.0",
     "react": "^18.3.1",
     "yaml": "^2.6.1",
-    "zod": "^3.23.8"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

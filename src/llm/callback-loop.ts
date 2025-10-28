@@ -65,7 +65,7 @@ export class CallbackLoop {
     this.maxIterations = options.maxIterations || 50;
     this.verbose = options.verbose || false;
     this.claudeModel = options.claudeModel || 'claude-sonnet-3.5';
-    this.ollamaModel = options.ollamaModel || this.modelManager.selectModelForTask('code');
+    this.ollamaModel = options.ollamaModel || ''; // Will be set during initialize()
     this.autoSave = options.autoSave !== false; // Default true
   }
 
@@ -74,6 +74,11 @@ export class CallbackLoop {
    */
   async initialize(): Promise<void> {
     await fs.mkdir(this.workDir, { recursive: true });
+
+    // Select model if not already set
+    if (!this.ollamaModel) {
+      this.ollamaModel = this.modelManager.selectModelForTask('code');
+    }
 
     // Load existing tasks if any
     const queueFile = path.join(this.workDir, 'task-queue.json');
