@@ -1,6 +1,6 @@
 {
   "name": "ollama-code",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Cost-effective AI code assistant - 100% local, $0 cost alternative to Claude Code",
   "type": "module",
   "main": "dist/index.js",
