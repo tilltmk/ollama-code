@@ -8,4 +8,19 @@ dist/
 *.swp
 *.swo
 *~
+
+# User-specific configuration and data
 .ollama-code/
+.ollama-code-queue/
+~/.ollama-code/
+
+# Test outputs
+test-*.txt
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+*.tmp
