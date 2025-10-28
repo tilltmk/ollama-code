@@ -317,6 +317,49 @@ For very long tasks that might timeout, use the callback loop system.`;
   }
 
   /**
+   * Execute a single command and exit (non-interactive mode)
+   */
+  async executeSingleCommand(prompt: string): Promise<void> {
+    const initSpinner = ora('Initializing Ollama Code...').start();
+
+    try {
+      await this.initialize();
+      initSpinner.succeed('Ready!');
+    } catch (error) {
+      initSpinner.fail('Initialization failed');
+      console.error(chalk.red('Error during initialization:'), error);
+      console.error(chalk.yellow('\nPlease check your configuration and try again.'));
+      process.exit(1);
+    }
+
+    // Process the single command
+    const spinner = ora({
+      text: 'Processing...',
+      spinner: 'dots'
+    }).start();
+
+    try {
+      const startTime = Date.now();
+
+      const response = await this.agent.run(prompt, {
+        verbose: this.verbose,
+      });
+
+      const duration = Date.now() - startTime;
+      spinner.succeed(`Completed in ${(duration / 1000).toFixed(1)}s`);
+
+      console.log(chalk.white('\n' + response + '\n'));
+
+      // Exit cleanly
+      process.exit(0);
+    } catch (error) {
+      spinner.fail('Error occurred');
+      console.error(chalk.red('\n❌ Error:'), error);
+      process.exit(1);
+    }
+  }
+
+  /**
    * Start REPL
    */
   async start(): Promise<void> {

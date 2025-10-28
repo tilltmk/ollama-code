@@ -15,12 +15,13 @@ program
 
 program
   .command('chat', { isDefault: true })
-  .description('Start interactive chat REPL')
+  .description('Start interactive chat REPL or execute a single command')
+  .argument('[prompt...]', 'Optional prompt to execute (if provided, runs once and exits)')
   .option('-m, --model <model>', 'Model to use (e.g., qwen3-coder:30b, gpt-oss:20b)')
   .option('-v, --verbose', 'Enable verbose output (show tool calls)')
   .option('--url <url>', 'Ollama server URL (default: http://localhost:11434)')
   .option('-t, --temperature <number>', 'Temperature for generation (0.0-1.0)', parseFloat)
-  .action(async (options) => {
+  .action(async (promptArgs: string[], options) => {
     // Health check
     const ollamaUrl = options.url || process.env.OLLAMA_URL || 'http://localhost:11434';
     const client = new OllamaClient(ollamaUrl);
@@ -54,7 +55,16 @@ program
       verbose: options.verbose || false,
       config: configManager.get()
     });
-    await repl.start();
+
+    // Check if prompt was provided
+    const prompt = promptArgs.join(' ').trim();
+    if (prompt) {
+      // Single-shot mode: execute and exit
+      await repl.executeSingleCommand(prompt);
+    } else {
+      // Interactive REPL mode
+      await repl.start();
+    }
   });
 
 program
