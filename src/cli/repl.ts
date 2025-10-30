@@ -86,6 +86,10 @@ export class REPL {
       terminal: true,
     });
 
+    console.log('[REPL] Readline interface created');
+    console.log('[REPL] Terminal mode:', this.rl.terminal);
+    console.log('[REPL] Input:', process.stdin.isTTY ? 'TTY' : 'Not TTY');
+
     this.stats = {
       totalRequests: 0,
       totalTokens: 0,
