@@ -114,7 +114,10 @@ export class Agent {
   async run(userMessage: string, agentConfig: AgentConfig = {}): Promise<string> {
     const maxIterations = agentConfig.maxIterations || 50; // Increased from 10 to 50
     const maxRetries = agentConfig.maxRetries || 3;
-    const model = agentConfig.model || this.modelManager.selectModelForTask('code');
+    // Use model from agentConfig, then config.defaultModel, then select based on task
+    const model = agentConfig.model ||
+                   this.config.defaultModel ||
+                   this.modelManager.selectModelForTask('code');
     const verbose = agentConfig.verbose || false;
 
     // Set system prompt if provided

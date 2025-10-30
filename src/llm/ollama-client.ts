@@ -59,42 +59,21 @@ export class OllamaClient {
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
-      // Debug logging
-      console.log('[DEBUG] Sending request to Ollama:', {
-        url: `${this.baseUrl}/v1/chat/completions`,
-        model: request.model,
-        messagesCount: request.messages?.length || 0,
-        hasTools: !!request.tools,
-        timeout: timeout
-      });
-
-      const requestBody = JSON.stringify(request);
-      console.log('[DEBUG] Request size:', requestBody.length, 'bytes');
-
       const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: requestBody,
+        body: JSON.stringify(request),
         signal: controller.signal,
-      });
-
-      console.log('[DEBUG] Response received:', {
-        status: response.status,
-        statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries())
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('[DEBUG] Error response body:', errorText);
         throw new OllamaError(response.status, errorText);
       }
 
-      const result = await response.json() as ChatCompletionResponse;
-      console.log('[DEBUG] Response parsed successfully');
-      return result;
+      return await response.json() as ChatCompletionResponse;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         throw new Error(`Request timeout after ${timeout}ms`);
