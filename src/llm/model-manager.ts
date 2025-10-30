@@ -1,5 +1,6 @@
 import { OllamaClient } from './ollama-client.js';
 import type { Config, OllamaModel } from '../types/index.js';
+import { MODEL_SCORING } from '../constants/index.js';
 
 export interface ModelInfo {
   name: string;
@@ -10,9 +11,25 @@ export interface ModelInfo {
   priority: number; // Lower is higher priority
 }
 
+export interface TaskContext {
+  type: string; // Dynamic - not limited to hardcoded values
+  complexity?: 'low' | 'medium' | 'high';
+  estimatedTokens?: number;
+  timeConstraint?: number; // milliseconds
+  priority?: 'speed' | 'balanced' | 'quality';
+}
+
+export interface ModelMetrics {
+  totalRequests: number;
+  totalErrors: number;
+  avgResponseTime: number;
+  lastUsed: number;
+  tokenUsage: number;
+  errorRate?: number;
+}
+
 export class ModelManager {
   private client: OllamaClient;
-  private config: Config;
   private availableModels: OllamaModel[] = [];
 
   // Model capabilities and preferences
@@ -25,29 +42,13 @@ export class ModelManager {
       bestFor: ['code', 'refactoring', 'debugging'],
       priority: 1,
     },
-    'qwen3-coder:latest': {
-      name: 'qwen3-coder:latest',
-      displayName: 'Qwen3 Coder',
-      description: 'Latest Qwen3 Coder model',
-      size: 18,
-      bestFor: ['code', 'refactoring', 'debugging'],
-      priority: 2,
-    },
     'gpt-oss:20b': {
       name: 'gpt-oss:20b',
       displayName: 'GPT-OSS 20B',
       description: 'OpenAI open-source model with strong reasoning',
       size: 13,
       bestFor: ['reasoning', 'planning', 'complex-tasks'],
-      priority: 3,
-    },
-    'gpt-oss:latest': {
-      name: 'gpt-oss:latest',
-      displayName: 'GPT-OSS',
-      description: 'Latest GPT-OSS model',
-      size: 13,
-      bestFor: ['reasoning', 'planning', 'complex-tasks'],
-      priority: 4,
+      priority: 2,
     },
     'llama3.1:8b': {
       name: 'llama3.1:8b',
@@ -55,21 +56,15 @@ export class ModelManager {
       description: 'Fast and efficient general-purpose model',
       size: 4.9,
       bestFor: ['general', 'fast-tasks', 'simple-operations'],
-      priority: 5,
-    },
-    'llama3.1:latest': {
-      name: 'llama3.1:latest',
-      displayName: 'Llama 3.1',
-      description: 'Latest Llama 3.1 model',
-      size: 4.9,
-      bestFor: ['general', 'fast-tasks', 'simple-operations'],
-      priority: 6,
+      priority: 3,
     },
   };
 
+  // Performance metrics tracking
+  private modelMetrics: Map<string, ModelMetrics> = new Map();
+
   constructor(config: Config) {
     this.client = new OllamaClient(config.ollamaUrl);
-    this.config = config;
   }
 
   /**
@@ -102,33 +97,157 @@ export class ModelManager {
   }
 
   /**
-   * Select best model for a specific task type
+   * Select best model for a task context (supports dynamic task types and adaptive selection)
    */
-  selectModelForTask(taskType: 'code' | 'reasoning' | 'general' = 'code'): string {
+  selectModelForTask(context: TaskContext | string): string {
+    // Normalize input to TaskContext
+    const ctx = typeof context === 'string'
+      ? { type: context }
+      : context;
+
     const preferred = this.getPreferredModels();
 
-    // Find best model for task type
-    for (const model of preferred) {
-      const info = this.modelPreferences[model.name];
-      if (info && info.bestFor.includes(taskType)) {
-        return model.name;
+    if (preferred.length === 0) {
+      throw new Error('No models available in Ollama');
+    }
+
+    // Speed priority: select fastest model by average response time
+    if (ctx.priority === 'speed') {
+      return this.selectFastestModel(preferred);
+    }
+
+    // Quality priority: select most accurate model by error rate
+    if (ctx.priority === 'quality') {
+      return this.selectMostReliableModel(preferred);
+    }
+
+    // Default balanced approach: find best model for task type with metrics consideration
+    return this.selectBalancedModel(preferred, ctx);
+  }
+
+  /**
+   * Select fastest available model based on metrics
+   */
+  private selectFastestModel(candidates: OllamaModel[]): string {
+    let fastest = candidates[0];
+    let fastestTime = Infinity;
+
+    for (const model of candidates) {
+      const metrics = this.modelMetrics.get(model.name);
+      const avgTime = metrics?.avgResponseTime ?? Infinity;
+      if (avgTime < fastestTime) {
+        fastestTime = avgTime;
+        fastest = model;
       }
     }
 
-    // Fallback to default or first available
-    if (this.config.defaultModel) {
-      const exists = this.availableModels.find(m => m.name === this.config.defaultModel);
-      if (exists) return this.config.defaultModel;
+    return fastest.name;
+  }
+
+  /**
+   * Select most reliable model based on error rate
+   */
+  private selectMostReliableModel(candidates: OllamaModel[]): string {
+    let mostReliable = candidates[0];
+    let lowestErrorRate = 1;
+
+    for (const model of candidates) {
+      const metrics = this.modelMetrics.get(model.name);
+      const errorRate = metrics?.errorRate ?? 0;
+      if (errorRate < lowestErrorRate) {
+        lowestErrorRate = errorRate;
+        mostReliable = model;
+      }
     }
 
-    const firstPreferred = preferred[0];
-    if (firstPreferred) return firstPreferred.name;
+    return mostReliable.name;
+  }
 
-    // Last resort: use first available model
-    const first = this.availableModels[0];
-    if (first) return first.name;
+  /**
+   * Select model with balanced scoring based on task type and metrics
+   */
+  private selectBalancedModel(candidates: OllamaModel[], ctx: TaskContext): string {
+    let bestModel = candidates[0];
+    let bestScore = -Infinity;
 
-    throw new Error('No models available in Ollama');
+    for (const model of candidates) {
+      const info = this.modelPreferences[model.name];
+      const metrics = this.modelMetrics.get(model.name);
+
+      // Score based on task type match
+      let typeScore = info?.bestFor.includes(ctx.type) ? MODEL_SCORING.BEST_FOR_SCORE : 0;
+
+      // Score based on priority (lower is better)
+      let priorityScore = (1 - (info?.priority ?? 999) / 999) * 30;
+
+      // Score based on metrics
+      let metricsScore = 0;
+      if (metrics) {
+        const errorRate = metrics.errorRate ?? 0;
+        const responseScore = Math.max(0, 100 - metrics.avgResponseTime);
+        metricsScore = ((1 - errorRate) * responseScore) / 100 * 20;
+      }
+
+      const totalScore = typeScore + priorityScore + metricsScore;
+
+      if (totalScore > bestScore) {
+        bestScore = totalScore;
+        bestModel = model;
+      }
+    }
+
+    return bestModel.name;
+  }
+
+  /**
+   * Record performance metrics for a model
+   */
+  recordMetrics(model: string, duration: number, tokens: number, error?: boolean): void {
+    const existing = this.modelMetrics.get(model) || {
+      totalRequests: 0,
+      totalErrors: 0,
+      avgResponseTime: 0,
+      lastUsed: Date.now(),
+      tokenUsage: 0,
+    };
+
+    existing.totalRequests++;
+    if (error) {
+      existing.totalErrors++;
+    }
+
+    // Update average response time
+    existing.avgResponseTime =
+      (existing.avgResponseTime * (existing.totalRequests - 1) + duration) /
+      existing.totalRequests;
+
+    // Update error rate
+    existing.errorRate = existing.totalRequests > 0
+      ? existing.totalErrors / existing.totalRequests
+      : 0;
+
+    existing.tokenUsage += tokens;
+    existing.lastUsed = Date.now();
+
+    this.modelMetrics.set(model, existing);
+  }
+
+  /**
+   * Get metrics for a specific model
+   */
+  getModelMetrics(model: string): ModelMetrics | undefined {
+    return this.modelMetrics.get(model);
+  }
+
+  /**
+   * Get all metrics
+   */
+  getAllMetrics(): Record<string, ModelMetrics> {
+    const result: Record<string, ModelMetrics> = {};
+    this.modelMetrics.forEach((metrics, model) => {
+      result[model] = metrics;
+    });
+    return result;
   }
 
   /**

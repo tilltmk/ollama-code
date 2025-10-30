@@ -8,18 +8,105 @@ import Database from 'better-sqlite3';
 import type { ToolDefinition } from '../types/index.js';
 import path from 'path';
 
-// Cache for database connections
-const dbCache = new Map<string, Database.Database>();
+// Cache configuration
+const MAX_CACHE_SIZE = 20;
+const AUTO_CLOSE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
+// Cache for database connections with auto-close timers
+interface CacheEntry {
+  db: Database.Database;
+  timer?: NodeJS.Timeout;
+}
+
+const dbCache = new Map<string, CacheEntry>();
+
+/**
+ * Close all cached database connections
+ */
+function closeAllDatabases(): void {
+  for (const [dbPath, entry] of dbCache.entries()) {
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+    }
+    try {
+      entry.db.close();
+    } catch (e) {
+      console.error(`Failed to close database ${dbPath}:`, e);
+    }
+  }
+  dbCache.clear();
+}
+
+// Register cleanup handlers
+process.on('exit', closeAllDatabases);
+process.on('SIGINT', () => {
+  closeAllDatabases();
+  process.exit();
+});
+process.on('SIGTERM', () => {
+  closeAllDatabases();
+  process.exit();
+});
+
+/**
+ * Get or create a database connection with auto-close and cache management
+ */
 function getDatabase(filepath: string): Database.Database {
   const absolutePath = path.resolve(filepath);
 
-  if (!dbCache.has(absolutePath)) {
-    const db = new Database(absolutePath);
-    dbCache.set(absolutePath, db);
+  // Check if database is already cached
+  if (dbCache.has(absolutePath)) {
+    const entry = dbCache.get(absolutePath)!;
+
+    // Clear existing timer
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+    }
+
+    // Set new auto-close timer
+    entry.timer = setTimeout(() => {
+      try {
+        entry.db.close();
+        dbCache.delete(absolutePath);
+      } catch (e) {
+        console.error(`Failed to auto-close database ${absolutePath}:`, e);
+      }
+    }, AUTO_CLOSE_TIMEOUT);
+
+    return entry.db;
   }
 
-  return dbCache.get(absolutePath)!;
+  // Enforce cache size limit
+  if (dbCache.size >= MAX_CACHE_SIZE) {
+    // Close and remove oldest entry (first in map)
+    const oldestKey = dbCache.keys().next().value;
+    if (oldestKey) {
+      const oldEntry = dbCache.get(oldestKey)!;
+      if (oldEntry.timer) {
+        clearTimeout(oldEntry.timer);
+      }
+      try {
+        oldEntry.db.close();
+      } catch (e) {
+        console.error(`Failed to close database ${oldestKey}:`, e);
+      }
+      dbCache.delete(oldestKey);
+    }
+  }
+
+  // Create new database connection
+  const db = new Database(absolutePath);
+  const timer = setTimeout(() => {
+    try {
+      db.close();
+      dbCache.delete(absolutePath);
+    } catch (e) {
+      console.error(`Failed to auto-close database ${absolutePath}:`, e);
+    }
+  }, AUTO_CLOSE_TIMEOUT);
+
+  dbCache.set(absolutePath, { db, timer });
+  return db;
 }
 
 // Schema for SQL query execution
@@ -144,8 +231,15 @@ async function closeDatabase(args: z.infer<typeof closeDatabaseSchema>): Promise
     const absolutePath = path.resolve(args.database);
 
     if (dbCache.has(absolutePath)) {
-      const db = dbCache.get(absolutePath)!;
-      db.close();
+      const entry = dbCache.get(absolutePath)!;
+
+      // Clear the auto-close timer
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+      }
+
+      // Close the database
+      entry.db.close();
       dbCache.delete(absolutePath);
       return `Database '${args.database}' closed successfully.`;
     }

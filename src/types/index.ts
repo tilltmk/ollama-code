@@ -74,6 +74,10 @@ export interface Config {
   availableModels: string[];
   temperature: number;
   maxTokens: number;
+  logLevel?: 'debug' | 'info' | 'warn' | 'error';
+  timeout?: number;
+  maxRetries?: number;
+  enableSubAgents?: boolean;
 }
 
 export type ToolExecutor = (args: any) => Promise<any>;

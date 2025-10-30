@@ -1,0 +1,8 @@
+{
+  "name": "example-tool-plugin",
+  "version": "1.0.0",
+  "description": "Example plugin that registers a custom tool",
+  "main": "index.js",
+  "type": "tool",
+  "permissions": []
+}

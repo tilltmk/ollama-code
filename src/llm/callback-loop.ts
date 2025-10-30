@@ -12,10 +12,12 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import crypto from 'crypto';
 import { Agent } from './agent.js';
 import type { Config } from '../types/index.js';
 import { ToolManager } from '../tools/tool-manager.js';
 import { ModelManager } from './model-manager.js';
+import { DEFAULTS } from '../constants/index.js';
 
 export interface CallbackTask {
   id: string;
@@ -51,6 +53,9 @@ export class CallbackLoop {
   private claudeModel: string;
   private ollamaModel: string;
   private autoSave: boolean;
+  private saveMutex: Promise<void> = Promise.resolve();
+  private isSaving: boolean = false;
+  private taskHashes: Set<string> = new Set();
 
   constructor(
     config: Config,
@@ -61,8 +66,8 @@ export class CallbackLoop {
     this.config = config;
     this.toolManager = toolManager;
     this.modelManager = modelManager;
-    this.workDir = options.workDir || path.join(process.cwd(), '.ollama-code-queue');
-    this.maxIterations = options.maxIterations || 50;
+    this.workDir = options.workDir || path.join(process.cwd(), DEFAULTS.CALLBACK.WORK_DIR);
+    this.maxIterations = options.maxIterations || DEFAULTS.CALLBACK.MAX_ITERATIONS;
     this.verbose = options.verbose || false;
     this.claudeModel = options.claudeModel || 'claude-sonnet-3.5';
     this.ollamaModel = options.ollamaModel || ''; // Will be set during initialize()
@@ -81,12 +86,19 @@ export class CallbackLoop {
     }
 
     // Load existing tasks if any
-    const queueFile = path.join(this.workDir, 'task-queue.json');
+    const queueFile = path.join(this.workDir, DEFAULTS.CALLBACK.QUEUE_FILE);
     try {
       const data = await fs.readFile(queueFile, 'utf-8');
       const saved = JSON.parse(data);
       this.tasks = saved.tasks || [];
       this.iteration = saved.iteration || 0;
+
+      // Rebuild task hash set
+      this.taskHashes.clear();
+      for (const task of this.tasks) {
+        const hash = this.getTaskHash(task.description, task.type);
+        this.taskHashes.add(hash);
+      }
 
       if (this.verbose) {
         console.log(`[Callback Loop] Loaded ${this.tasks.length} tasks from previous session`);
@@ -100,17 +112,71 @@ export class CallbackLoop {
   }
 
   /**
-   * Save current state
+   * Generate hash for task deduplication
+   */
+  private getTaskHash(description: string, type: string): string {
+    return crypto.createHash('md5')
+      .update(`${description}:${type}`)
+      .digest('hex');
+  }
+
+  /**
+   * Save current state with atomic file operations and mutex lock
+   * Prevents race conditions from concurrent saves
    */
   private async save(): Promise<void> {
-    if (!this.autoSave) return;
+    if (!this.autoSave || this.isSaving) return;
 
-    const queueFile = path.join(this.workDir, 'task-queue.json');
-    await fs.writeFile(queueFile, JSON.stringify({
-      tasks: this.tasks,
-      iteration: this.iteration,
-      timestamp: Date.now()
-    }, null, 2));
+    this.isSaving = true;
+    this.saveMutex = this.saveMutex.then(async () => {
+      try {
+        const queueFile = path.join(this.workDir, 'task-queue.json');
+        const tempFile = queueFile + '.tmp';
+
+        // Write to temp file first
+        await fs.writeFile(tempFile, JSON.stringify({
+          tasks: this.tasks,
+          iteration: this.iteration,
+          timestamp: Date.now()
+        }, null, 2));
+
+        // Atomic rename - ensures file is never corrupted
+        await fs.rename(tempFile, queueFile);
+      } catch (error) {
+        if (this.verbose) {
+          console.error('[Callback Loop] Save error:', error);
+        }
+      } finally {
+        this.isSaving = false;
+      }
+    });
+
+    return this.saveMutex;
+  }
+
+  /**
+   * Atomically update task status with validation
+   * Prevents invalid state transitions
+   */
+  private async updateTaskStatus(
+    taskId: string,
+    fromStatus: CallbackTask['status'],
+    toStatus: CallbackTask['status'],
+    updates?: Partial<CallbackTask>
+  ): Promise<void> {
+    const task = this.tasks.find(t => t.id === taskId);
+
+    if (!task || task.status !== fromStatus) {
+      throw new Error(`Cannot transition task ${taskId} from ${fromStatus} to ${toStatus} (current: ${task?.status})`);
+    }
+
+    Object.assign(task, {
+      status: toStatus,
+      ...updates,
+      updatedAt: Date.now()
+    });
+
+    await this.save();
   }
 
   /**
@@ -122,6 +188,22 @@ export class CallbackLoop {
     agent: 'claude' | 'ollama' = 'ollama',
     priority: number = 5
   ): string {
+    // Check for duplicate task
+    const hash = this.getTaskHash(description, type);
+
+    if (this.taskHashes.has(hash)) {
+      const existing = this.tasks.find(t =>
+        this.getTaskHash(t.description, t.type) === hash
+      );
+      if (existing) {
+        if (this.verbose) {
+          console.log(`[Callback Loop] Skipping duplicate task: ${existing.id}`);
+        }
+        return existing.id;
+      }
+    }
+
+    // Create new task
     const task: CallbackTask = {
       id: `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       type,
@@ -134,6 +216,7 @@ export class CallbackLoop {
     };
 
     this.tasks.push(task);
+    this.taskHashes.add(hash);
 
     if (this.verbose) {
       console.log(`[Callback Loop] Added task ${task.id}: ${description.substring(0, 50)}...`);
@@ -144,51 +227,66 @@ export class CallbackLoop {
 
   /**
    * Get next task to execute
+   *
+   * PERFORMANCE: O(n) single pass instead of O(n log n) sort
+   * Just find the maximum priority task, no need to sort entire array
    */
   private getNextTask(): CallbackTask | null {
-    // Sort by priority (higher first) and creation time
-    const pending = this.tasks.filter(t => t.status === 'pending');
-    if (pending.length === 0) return null;
+    let best: CallbackTask | null = null;
 
-    pending.sort((a, b) => {
-      if (b.priority !== a.priority) {
-        return b.priority - a.priority;
+    for (const task of this.tasks) {
+      if (task.status !== 'pending') continue;
+
+      if (!best ||
+          task.priority > best.priority ||
+          (task.priority === best.priority && task.createdAt < best.createdAt)) {
+        best = task;
       }
-      return a.createdAt - b.createdAt;
-    });
+    }
 
-    return pending[0];
+    return best;
   }
 
   /**
    * Execute a task with the appropriate agent
+   * Includes timeout protection and atomic state transitions
    */
   private async executeTask(task: CallbackTask): Promise<void> {
-    task.status = 'in_progress';
-    task.updatedAt = Date.now();
-    await this.save();
+    // Atomic transition to in_progress
+    await this.updateTaskStatus(task.id, 'pending', 'in_progress');
 
     if (this.verbose) {
       console.log(`\n[Iteration ${this.iteration}] Executing ${task.type} task (${task.agent})`);
       console.log(`  Task: ${task.description}`);
     }
 
+    const timeout = 5 * 60 * 1000; // 5 minutes timeout
+    const startTime = Date.now();
+
     try {
       if (task.agent === 'ollama') {
-        // Execute with Ollama agent
+        // Execute with Ollama agent with timeout protection
         const agent = new Agent(this.config, this.toolManager, this.modelManager);
-        const result = await agent.run(task.description, {
-          model: this.ollamaModel,
-          verbose: this.verbose,
-          maxRetries: 3,
-          maxIterations: 10
+
+        const result = await Promise.race([
+          agent.run(task.description, {
+            model: this.ollamaModel,
+            verbose: this.verbose,
+            maxRetries: 3,
+            maxIterations: 10
+          }),
+          new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('Task timeout after 5 minutes')), timeout)
+          )
+        ]);
+
+        // Atomic transition to completed
+        await this.updateTaskStatus(task.id, 'in_progress', 'completed', {
+          result: result
         });
 
-        task.result = result;
-        task.status = 'completed';
-
         if (this.verbose) {
-          console.log(`  ✓ Completed in ${Date.now() - task.updatedAt}ms`);
+          console.log(`  ✓ Completed in ${Date.now() - startTime}ms`);
         }
 
         // Create review task for Claude
@@ -203,9 +301,12 @@ export class CallbackLoop {
 
       } else if (task.agent === 'claude') {
         // For Claude tasks, we generate a prompt that external Claude can process
-        // This would be handled by the calling application
-        task.result = `[Awaiting Claude response for: ${task.description}]`;
-        task.status = 'completed';
+        const claudePrompt = `[Awaiting Claude response for: ${task.description}]`;
+
+        // Atomic transition to completed
+        await this.updateTaskStatus(task.id, 'in_progress', 'completed', {
+          result: claudePrompt
+        });
 
         if (this.verbose) {
           console.log(`  → Prepared prompt for Claude`);
@@ -213,26 +314,27 @@ export class CallbackLoop {
       }
 
     } catch (error) {
-      task.error = error instanceof Error ? error.message : String(error);
-      task.status = 'failed';
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Atomic transition to failed
+      await this.updateTaskStatus(task.id, 'in_progress', 'failed', {
+        error: errorMessage
+      });
 
       if (this.verbose) {
-        console.log(`  ✗ Failed: ${task.error}`);
+        console.log(`  ✗ Failed: ${errorMessage}`);
       }
 
       // Create retry task with lower priority
       if (task.priority > 1) {
         this.addTask(
-          `Retry failed task: ${task.description}\n\nPrevious error: ${task.error}`,
+          `Retry failed task: ${task.description}\n\nPrevious error: ${errorMessage}`,
           task.type,
           task.agent,
           task.priority - 1
         );
       }
     }
-
-    task.updatedAt = Date.now();
-    await this.save();
   }
 
   /**
@@ -379,6 +481,7 @@ Results available in: ${this.workDir}
   async clear(): Promise<void> {
     this.tasks = [];
     this.iteration = 0;
+    this.taskHashes.clear();
     await this.save();
 
     if (this.verbose) {

@@ -3,6 +3,9 @@ import { ModelManager } from './model-manager.js';
 import { ToolManager } from '../tools/tool-manager.js';
 import { ToolFormatParser } from './tool-format-parser.js';
 import type { Message, Config } from '../types/index.js';
+import { logger } from '../utils/logger.js';
+import { ApiError } from '../utils/errors.js';
+import { DEFAULTS, REGEX_PATTERNS } from '../constants/index.js';
 
 export interface AgentConfig {
   systemPrompt?: string;
@@ -12,32 +15,15 @@ export interface AgentConfig {
   maxRetries?: number; // Max retries for failed tool calls
 }
 
-/**
- * Extract thinking/reasoning content from message
- * Supports multiple formats: <thinking>...</thinking>, <reasoning>...</reasoning>, etc.
- */
 function extractThinking(content: string): { thinking: string | undefined; cleanContent: string } {
-  const thinkingPatterns = [
-    /<thinking>([\s\S]*?)<\/thinking>/i,
-    /<reasoning>([\s\S]*?)<\/reasoning>/i,
-    /<thought>([\s\S]*?)<\/thought>/i,
-    /\[THINKING\]([\s\S]*?)\[\/THINKING\]/i,
-    /\[REASONING\]([\s\S]*?)\[\/REASONING\]/i,
-  ];
-
-  let thinking: string | undefined;
-  let cleanContent = content;
-
-  for (const pattern of thinkingPatterns) {
-    const match = content.match(pattern);
-    if (match) {
-      thinking = match[1].trim();
-      cleanContent = content.replace(pattern, '').trim();
-      break;
-    }
+  const match = content.match(REGEX_PATTERNS.THINKING);
+  if (match) {
+    return {
+      thinking: match[1].trim(),
+      cleanContent: content.replace(REGEX_PATTERNS.THINKING, '').trim()
+    };
   }
-
-  return { thinking, cleanContent };
+  return { thinking: undefined, cleanContent: content };
 }
 
 export class Agent {
@@ -46,6 +32,7 @@ export class Agent {
   private toolManager: ToolManager;
   private config: Config;
   private conversationHistory: Message[] = [];
+  private readonly MAX_HISTORY_SIZE = DEFAULTS.AGENT.MAX_HISTORY_SIZE;
 
   constructor(
     config: Config,
@@ -110,6 +97,18 @@ export class Agent {
   }
 
   /**
+   * Compress conversation history to prevent memory overflow
+   * Keeps system message and most recent messages
+   */
+  private compressHistory(): void {
+    if (this.conversationHistory.length > this.MAX_HISTORY_SIZE) {
+      const systemMsg = this.conversationHistory.find(m => m.role === 'system');
+      const recentMessages = this.conversationHistory.slice(-30);
+      this.conversationHistory = systemMsg ? [systemMsg, ...recentMessages] : recentMessages;
+    }
+  }
+
+  /**
    * Run the agent with a user message
    */
   async run(userMessage: string, agentConfig: AgentConfig = {}): Promise<string> {
@@ -132,6 +131,9 @@ export class Agent {
     while (iterations < maxIterations) {
       iterations++;
 
+      // Compress history if needed to prevent memory overflow
+      this.compressHistory();
+
       if (verbose) {
         console.log(`\n[Iteration ${iterations}]`);
       }
@@ -139,8 +141,11 @@ export class Agent {
       // Make API call with tools (with retry logic)
       let response;
       let retryCount = 0;
+      let lastError: Error | undefined;
+
       while (retryCount < maxRetries) {
         try {
+          logger.api(`/chat/completions`, 'POST', 'request', { model, iteration: iterations, retry: retryCount });
           response = await this.client.chatCompletion({
             model,
             messages: this.conversationHistory,
@@ -148,21 +153,54 @@ export class Agent {
             temperature: this.config.temperature,
             max_tokens: this.config.maxTokens,
           });
+          logger.api(`/chat/completions`, 'POST', 'success', { model, iteration: iterations });
           break; // Success, exit retry loop
         } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
           retryCount++;
+
+          const backoffTime = 1000 * retryCount;
+          logger.warn(`API call failed, retry ${retryCount}/${maxRetries}`, {
+            error: lastError.message,
+            backoffMs: backoffTime,
+            iteration: iterations
+          });
+
           if (retryCount >= maxRetries) {
-            throw error; // Max retries reached, throw error
+            const apiError = new ApiError(
+              `Failed to get response after ${maxRetries} retries: ${lastError.message}`,
+              503,
+              { originalError: lastError.message, retries: maxRetries }
+            );
+            logger.error('Max retries reached for API call', apiError, { model, iteration: iterations });
+            throw apiError;
           }
+
           if (verbose) {
-            console.log(`[Retry ${retryCount}/${maxRetries}] API call failed, retrying...`);
+            console.log(`[Retry ${retryCount}/${maxRetries}] API call failed: ${lastError.message}. Retrying in ${backoffTime}ms...`);
           }
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
+
+          await new Promise(resolve => setTimeout(resolve, backoffTime)); // Exponential backoff
         }
       }
 
       if (!response) {
-        throw new Error('Failed to get response after retries');
+        const apiError = new ApiError('Failed to get response after retries', 500);
+        logger.error('No response received after retries', apiError);
+        throw apiError;
+      }
+
+      // Validate response structure
+      if (!response.choices || !Array.isArray(response.choices) || response.choices.length === 0) {
+        const apiError = new ApiError('Invalid API response: missing or empty choices array', 500);
+        logger.error('Invalid API response structure', apiError, { response });
+        throw apiError;
+      }
+
+      if (!response.choices[0].message) {
+        const apiError = new ApiError('Invalid API response: missing message in first choice', 500);
+        logger.error('Invalid API response structure', apiError, { response });
+        throw apiError;
       }
 
       let assistantMessage = response.choices[0].message;
@@ -212,22 +250,16 @@ export class Agent {
         // Execute all tool calls with retry logic
         const results = await this.toolManager.executeTools(assistantMessage.tool_calls);
 
-        // Check for errors and potentially retry
-        const hasErrors = results.some(r => r.error);
-        if (hasErrors && verbose) {
-          console.log('[Warning] Some tool calls failed:');
-          results.filter(r => r.error).forEach(r => {
-            console.log(`  - ${r.error}`);
-          });
-        }
-
-        // Show tool results in verbose mode
+        // PERFORMANCE: Single pass through results instead of multiple filter/forEach
         if (verbose) {
+          const errors: string[] = [];
           console.log('📊 Tool Results:');
+
           results.forEach((result, idx) => {
             console.log(`\n  ${idx + 1}. ${result.error ? '❌ Error' : '✅ Success'}`);
             if (result.error) {
               console.log(`     ${result.error}`);
+              errors.push(result.error);
             } else if (result.result) {
               const resultStr = JSON.stringify(result.result, null, 2);
               const displayResult = resultStr.length > 200
@@ -237,6 +269,11 @@ export class Agent {
             }
           });
           console.log();
+
+          if (errors.length > 0) {
+            console.log('[Warning] Some tool calls failed:');
+            errors.forEach(err => console.log(`  - ${err}`));
+          }
         }
 
         // Add tool results to conversation

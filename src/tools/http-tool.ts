@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import fetch from 'node-fetch';
 import type { ToolDefinition } from '../types/index.js';
+import { HTTP } from '../constants/index.js';
 
 // Schema for HTTP requests
 const httpRequestSchema = z.object({
@@ -13,13 +14,13 @@ const httpRequestSchema = z.object({
   method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD']).optional().describe('HTTP method (default: GET)'),
   headers: z.record(z.string()).optional().describe('HTTP headers as key-value pairs'),
   body: z.string().optional().describe('Request body (JSON string for POST/PUT/PATCH)'),
-  timeout: z.number().optional().describe('Request timeout in milliseconds (default: 30000)')
+  timeout: z.number().optional().describe(`Request timeout in milliseconds (default: ${HTTP.DEFAULT_TIMEOUT})`)
 });
 
 async function makeHttpRequest(args: z.infer<typeof httpRequestSchema>): Promise<string> {
   try {
     const method = args.method || 'GET';
-    const timeout = args.timeout || 30000;
+    const timeout = args.timeout || HTTP.DEFAULT_TIMEOUT;
 
     const options: any = {
       method,

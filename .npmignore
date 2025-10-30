@@ -1,0 +1,61 @@
+# Source files (we only ship dist)
+src/**/*.test.ts
+src/**/*.spec.ts
+
+# Config files
+.env
+.env.*
+.ollama-code.yaml
+tsconfig.json
+vitest.config.ts
+
+# Development files
+*.log
+*.pid
+*.seed
+*.pid.lock
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+*.swp
+*.swo
+
+# Dependencies
+node_modules/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Git
+.git/
+.gitignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Documentation source
+docs/
+*.md
+!README.md
+
+# Build files
+*.tsbuildinfo
+
+# Development scripts
+scripts/
+tools/
+
+# Analysis files
+README_ANALYSIS.md

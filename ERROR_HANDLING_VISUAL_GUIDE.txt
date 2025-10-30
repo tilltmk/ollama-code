@@ -1,0 +1,311 @@
+================================================================================
+                    ERROR-HANDLING AUDIT - VISUAL GUIDE
+================================================================================
+
+SEVERITY BREAKDOWN
+================================================================================
+
+CRITICAL (4 issues) - FIX IMMEDIATELY
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 1. CLI Entry Point Unhandled                                                 │
+│    Location: src/cli.ts:72-76                                                │
+│    Issue: await repl.start() has no try-catch wrapper                        │
+│    Impact: Unhandled promise rejection crashes application                   │
+│    Fix Time: 30 minutes                                                      │
+│                                                                              │
+│ 2. Agent Retry Loop Loses Context                                            │
+│    Location: src/llm/agent.ts:142-166                                        │
+│    Issue: Original error thrown without context information                  │
+│    Impact: Users can't determine why agent failed                            │
+│    Fix Time: 30 minutes                                                      │
+│                                                                              │
+│ 3. Model Manager Init Crashes Silently                                       │
+│    Location: src/llm/model-manager.ts:78-81                                  │
+│    Issue: await this.client.listModels() unhandled                           │
+│    Impact: App crashes if Ollama unreachable during init                     │
+│    Fix Time: 20 minutes                                                      │
+│                                                                              │
+│ 4. Zod Validation Not Caught                                                 │
+│    Location: src/tools/tool-manager.ts:140                                   │
+│    Issue: tool.schema.parse() not in try-catch                               │
+│    Impact: Cryptic Zod errors shown to users                                 │
+│    Fix Time: 30 minutes                                                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Total: ~1.5 hours to fix
+
+
+HIGH (6 issues) - FIX THIS WEEK
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 1. Inconsistent Tool Error Handling                                          │
+│    Location: http-tool.ts:62-64, sqlite-tool.ts:63-65                        │
+│    Issue: Some tools return error strings, others throw                      │
+│    Impact: Can't standardize error handling in caller                        │
+│    Fix Time: 20 minutes each                                                 │
+│                                                                              │
+│ 2. Plugin Loading Silent Failures                                            │
+│    Location: plugin-loader.ts:46-49, 64-66                                   │
+│    Issue: Errors logged or completely silent, user unaware                   │
+│    Impact: Users don't know plugins failed to load                           │
+│    Fix Time: 30 minutes                                                      │
+│                                                                              │
+│ 3. Config Corruption Ignored                                                 │
+│    Location: config/index.ts:31-35                                           │
+│    Issue: Invalid JSON silently falls back to defaults                       │
+│    Impact: Users think config loaded when it didn't                          │
+│    Fix Time: 30 minutes                                                      │
+│                                                                              │
+│ 4. Stream Parsing Silently Drops Chunks                                      │
+│    Location: ollama-client.ts:73-93                                          │
+│    Issue: Malformed JSON chunks skipped without notification                 │
+│    Impact: Users get incomplete responses without knowing                    │
+│    Fix Time: 30 minutes                                                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Total: ~2.5 hours to fix
+
+
+MEDIUM (5 issues) - FIX THIS SPRINT
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 1. Tool Execution Unhandled                                                  │
+│    Location: agent.ts:213                                                    │
+│    Issue: executeTools() can throw without handler                           │
+│    Fix Time: 30 minutes                                                      │
+│                                                                              │
+│ 2. Callback Loop Error Recovery Weak                                         │
+│    Location: callback-loop.ts:283-326                                        │
+│    Issue: No global error handler for task queue                             │
+│    Fix Time: 30 minutes                                                      │
+│                                                                              │
+│ 3. File System Errors Not Differentiated                                     │
+│    Location: file-ops.ts:46-48, 96-98                                        │
+│    Issue: All file errors treated identically                                │
+│    Fix Time: 30 minutes                                                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Total: ~1.5 hours to fix
+
+
+ERROR HANDLING FLOW - CURRENT STATE
+================================================================================
+
+CLI Entry → [NO ERROR HANDLING] → REPL Start
+                                      ↓
+                         [TRY-CATCH INCONSISTENT]
+                                      ↓
+                            Agent Loop / Tool Execution
+                            ↓              ↓
+                     [WEAK RETRY]    [INCONSISTENT THROWS]
+                            ↓              ↓
+                         Error Lost    Error as String
+                            ↓              ↓
+                     User sees crash  Can't distinguish errors
+
+
+RECOMMENDED FLOW - AFTER FIXES
+================================================================================
+
+CLI Entry → [TRY-CATCH] → Graceful Error Exit
+    ↓
+REPL Start → [TRY-CATCH] → Log Error + Exit
+    ↓
+Agent Loop → [RETRY WITH CONTEXT] → Preserve Error Info
+    ↓           ↓
+Tool Call   Error Logged
+    ↓           ↓
+[TRY-CATCH] ← User-Friendly Message
+    ↓
+Success or Graceful Failure
+
+
+ERROR TYPES HIERARCHY
+================================================================================
+
+Error
+├── ToolExecutionError
+│   ├── Recoverable: true (retry possible)
+│   └── Recoverable: false (permanent)
+│
+├── ValidationError
+│   ├── Field: name
+│   └── Message: specific validation failure
+│
+├── RetryExhaustedError
+│   ├── originalError: preserved
+│   ├── attempts: number
+│   └── Message: context-rich
+│
+├── StreamParseError
+│   ├── errors: array of failures
+│   └── Message: chunk count
+│
+└── ConfigError
+    ├── configPath: location
+    ├── isRecoverable: boolean
+    └── Message: specific issue
+
+
+FILE DEPENDENCY GRAPH - ERROR HANDLING
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────┐
+│ cli.ts (CRITICAL)                                               │
+│ ├─ REPL needs try-catch                                         │
+│ └─ Depends on: repl-enhanced.ts                                 │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │
+                       ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ repl-enhanced.ts                                                │
+│ ├─ Calls: modelManager.initialize() (NEEDS ERROR HANDLING)     │
+│ ├─ Calls: agent.run() (HAS WEAK ERROR HANDLING)                │
+│ └─ Depends on: agent.ts, model-manager.ts                      │
+└────────┬────────────────────────────────┬──────────────────────┘
+         │                                │
+         ↓                                ↓
+    ┌────────────────────┐         ┌──────────────────────┐
+    │ agent.ts           │         │ model-manager.ts     │
+    │ (CRITICAL)         │         │ (CRITICAL)           │
+    │ ├─ Retry logic     │         │ ├─ listModels()      │
+    │ │  (loses context) │         │ │  (unhandled)       │
+    │ └─ tool execution  │         │ └─ NO ERROR HANDLING │
+    │    (unhandled)     │         └──────────────────────┘
+    └────┬───────────────┘
+         │
+         ↓
+    ┌─────────────────────────────────────────────────────────────┐
+    │ tool-manager.ts (CRITICAL)                                  │
+    │ ├─ Zod parse() (NO ERROR HANDLING)                          │
+    │ ├─ executeTool() (TRY-CATCH PRESENT)                        │
+    │ └─ Calls: individual tools                                  │
+    └─────────────────────────────────────────────────────────────┘
+         │
+    ┌────┴────────────────────┬──────────────┬──────────────┐
+    ↓                        ↓              ↓              ↓
+┌────────────────┐  ┌──────────────┐ ┌──────────┐ ┌──────────┐
+│ file-ops.ts    │  │ http-tool.ts │ │ bash.ts  │ │ grep.ts  │
+│ (INCONSISTENT) │  │ (HIGH)       │ │ (GOOD)   │ │ (GOOD)   │
+│ ├─ THROWS      │  │ ├─ RETURNS   │ │ ├─ TRY-  │ │ ├─ TRY-  │
+│ │  errors      │  │ │  error str │ │ │ CATCH  │ │ │ CATCH  │
+│ └─ All types   │  │ └─ 2 methods │ │ └─ Both  │ │ └─ Good  │
+│    same        │  │              │ │   types  │ │   error  │
+└────────────────┘  └──────────────┘ └──────────┘ │   handling
+                                                  └──────────┘
+
+
+PRIORITY MATRIX
+================================================================================
+
+        EFFORT
+        ↑
+        │
+    5h  │  [CALLBACK]    [STREAMING]
+        │
+    3h  │  [PLUGIN]      [CONFIG]
+        │
+    1h  │  [CLI]  [AGENT]  [MODEL]  [ZOD]  [HTTP]  [SQLITE]
+        │
+        └─────────────────────────────────────────────────────→ IMPACT
+        Low          Medium          High
+
+Legend:
+- Size = effort in hours
+- Top-left = low effort, low impact (skip?)
+- Top-right = high effort, high impact (important)
+- Bottom-left = low effort, low impact (quick wins)
+- Bottom-right = low effort, high impact (CRITICAL)
+
+
+TESTING COVERAGE MATRIX
+================================================================================
+
+File                    Has Tests?   Error Path Tested?   Coverage
+──────────────────────────────────────────────────────────────────────
+cli.ts                      ?              NO             0%
+agent.ts                     ?              NO             0%
+model-manager.ts            ?              NO             0%
+tool-manager.ts             ?              NO             0%
+ollama-client.ts            ?              NO             0%
+plugin-loader.ts            ?              NO             0%
+config/index.ts             ?              NO             0%
+http-tool.ts                ?              NO             0%
+sqlite-tool.ts              ?              NO             0%
+file-ops.ts                 ?              NO             0%
+──────────────────────────────────────────────────────────────────────
+
+Recommendation: Add error path tests for all critical files
+
+
+IMPLEMENTATION TIMELINE
+================================================================================
+
+Week 1: Foundation & Critical Fixes
+├─ Day 1: Create error types + error logger
+├─ Day 2: Fix cli.ts, agent.ts, model-manager.ts
+├─ Day 3: Fix plugin-loader.ts, tool-manager.ts
+└─ Testing: Verify fixes work
+
+Week 2: Tool Standardization & Config
+├─ Day 4: Fix http-tool.ts, sqlite-tool.ts
+├─ Day 5: Fix config/index.ts
+├─ Day 6: Fix streaming errors
+└─ Testing: Verify error consistency
+
+Week 3: Polish & Documentation
+├─ Day 7: Add error tests
+├─ Day 8: User-facing error messages
+├─ Day 9: Update documentation
+└─ Testing: Comprehensive error tests
+
+
+EFFORT BREAKDOWN
+================================================================================
+
+Task                        Effort    Status
+────────────────────────────────────────────────
+Foundation (error types)     4h       TODO
+Fix Critical Issues          2h       TODO
+  ├─ CLI                    0.5h
+  ├─ Agent Retry           0.5h
+  ├─ Model Manager         0.3h
+  └─ Zod Validation        0.7h
+Fix High Priority            2.5h     TODO
+  ├─ Tools                 1h
+  ├─ Plugin Loader         0.5h
+  ├─ Config                0.5h
+  └─ Streaming             0.5h
+Fix Medium Priority          1.5h     TODO
+Add Error Tests              4h       TODO
+Documentation                2h       TODO
+────────────────────────────────────────────────
+TOTAL                       ~15h
+
+Priority Recommendation:
+1. Complete Foundation + Critical (6 hours)
+2. Complete High Priority (2.5 hours)
+3. Add basic tests (4 hours)
+Total Quick Path: 12.5 hours
+
+
+KEY METRICS
+================================================================================
+
+Current State:
+  - Error Handler Coverage: ~65%
+  - Silent Failures: 5 identified
+  - Unhandled Rejections: 4 locations
+  - Inconsistent Patterns: 4 files
+  - User-Friendly Errors: <20%
+
+Target State (After Fixes):
+  - Error Handler Coverage: >95%
+  - Silent Failures: 0
+  - Unhandled Rejections: 0
+  - Inconsistent Patterns: 0
+  - User-Friendly Errors: >90%
+
+
+================================================================================
+For detailed information, see ERROR_HANDLING_AUDIT.md
+For implementation details, see ERROR_HANDLING_IMPLEMENTATION_GUIDE.md
+================================================================================

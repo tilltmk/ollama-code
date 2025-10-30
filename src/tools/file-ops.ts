@@ -66,28 +66,28 @@ async function editFile(args: z.infer<typeof editFileSchema>): Promise<string> {
     // Read the file
     const content = await fs.readFile(args.file_path, 'utf-8');
 
-    // Replace the content
+    // PERFORMANCE: Optimized string replacement for large files
     let newContent: string;
     if (args.replace_all) {
-      // Replace all occurrences
-      newContent = content.split(args.old_string).join(args.new_string);
+      // Use replaceAll (native method) - more efficient than split/join for large files
+      newContent = content.replaceAll(args.old_string, args.new_string);
     } else {
-      // Replace only the first occurrence
+      // Find first occurrence
       const index = content.indexOf(args.old_string);
       if (index === -1) {
         throw new Error(`String not found in file: ${args.old_string}`);
       }
+
+      // Check for multiple occurrences efficiently (stop after finding second)
+      const secondIndex = content.indexOf(args.old_string, index + args.old_string.length);
+      if (secondIndex !== -1) {
+        throw new Error(`Found multiple occurrences. Use replace_all: true to replace all.`);
+      }
+
+      // Single replace using substring - avoid creating regex
       newContent = content.substring(0, index) +
         args.new_string +
         content.substring(index + args.old_string.length);
-    }
-
-    // Check if multiple occurrences exist when replace_all is false
-    if (!args.replace_all) {
-      const count = (content.match(new RegExp(args.old_string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-      if (count > 1) {
-        throw new Error(`Found ${count} occurrences. Use replace_all: true to replace all.`);
-      }
     }
 
     // Write back

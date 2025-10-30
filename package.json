@@ -15,6 +15,10 @@
     "start": "node dist/cli.js",
     "watch": "tsc --watch",
     "test": "vitest",
+    "test:run": "vitest run",
+    "test:watch": "vitest watch",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
     "install-global": "npm run build && npm link",
     "update-global": "npm run build && npm link --force",
     "uninstall-global": "npm unlink -g ollama-code",
@@ -27,10 +31,29 @@
     "gpt-oss",
     "code-assistant",
     "ai",
-    "cli"
+    "cli",
+    "llm",
+    "local-ai",
+    "coding-assistant",
+    "developer-tools"
   ],
-  "author": "",
+  "author": "Core System",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/ollama-code.git"
+  },
+  "homepage": "https://github.com/yourusername/ollama-code#readme",
+  "bugs": {
+    "url": "https://github.com/yourusername/ollama-code/issues"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.2",
     "@types/better-sqlite3": "^7.6.13",
@@ -53,9 +76,10 @@
     "@types/node": "^22.10.2",
     "@types/node-fetch": "^2.6.13",
     "@types/react": "^18.3.18",
+    "@vitest/coverage-v8": "^4.0.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^4.0.5"
   },
   "engines": {
     "node": ">=18.0.0"
