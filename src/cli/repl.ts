@@ -160,7 +160,8 @@ For very long tasks that might timeout, use the callback loop system.`;
     console.log(modelsSummary);
 
     const config = this.configManager.get();
-    const currentModel = this.modelManager.selectModelForTask('code');
+    // Use configured model if available, otherwise select one for the task
+    const currentModel = config.defaultModel || this.modelManager.selectModelForTask('code');
     console.log(chalk.green.bold(`\n✨ Current Model: ${currentModel}`));
     console.log(chalk.gray(`🔗 Ollama URL: ${config.ollamaUrl}`));
     console.log(chalk.gray(`🎯 Temperature: ${config.temperature}`));
