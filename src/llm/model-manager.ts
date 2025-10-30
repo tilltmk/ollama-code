@@ -107,8 +107,14 @@ export class ModelManager {
 
     const preferred = this.getPreferredModels();
 
+    // If no preferred models found, use any available model
     if (preferred.length === 0) {
-      throw new Error('No models available in Ollama');
+      if (this.availableModels.length === 0) {
+        throw new Error('No models available in Ollama');
+      }
+      // Return the first available model
+      console.log('[ModelManager] No preferred models found, using:', this.availableModels[0].name);
+      return this.availableModels[0].name;
     }
 
     // Speed priority: select fastest model by average response time
