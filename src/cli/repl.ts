@@ -668,9 +668,6 @@ For very long tasks that might timeout, use the callback loop system.`;
       // Do nothing, just keep the event loop alive
     }, DEFAULTS.SIGINT.KEEPALIVE_INTERVAL);
 
-    // Display initial prompt
-    this.rl.prompt();
-
     // Use line event listener for better compatibility
     this.rl.on('line', async (line) => {
         console.log('[REPL] Line received:', line);
@@ -681,31 +678,31 @@ For very long tasks that might timeout, use the callback loop system.`;
       if (this.multilineMode) {
         if (trimmed === COMMANDS.END) {
           await this.processMultilineBuffer();
-          processInput();
+          this.rl.prompt();
           return;
         } else if (trimmed === COMMANDS.CANCEL) {
           this.multilineMode = false;
           this.multilineBuffer = [];
           this.rl.setPrompt(chalk.cyan.bold(UI.PROMPTS.REPL));
           console.log(chalk.yellow('✗ Multi-line input cancelled'));
-          processInput();
+          this.rl.prompt();
           return;
         } else {
           this.multilineBuffer.push(line);
-          processInput();
+          this.rl.prompt();
           return;
         }
       }
 
       if (!trimmed) {
-        processInput();
+        this.rl.prompt();
         return;
       }
 
       // Handle special commands
       const handled = await this.handleCommand(trimmed);
       if (handled) {
-        processInput();
+        this.rl.prompt();
         return;
       }
 
@@ -759,12 +756,9 @@ For very long tasks that might timeout, use the callback loop system.`;
         console.log();
       }
 
-        processInput(); // Recursively call for next input
-      });
-    };
-
-    // Start the input loop
-    processInput();
+      // Show prompt again for next input
+      this.rl.prompt();
+    });
 
     this.rl.on('close', () => {
       clearInterval(keepAlive);
@@ -776,14 +770,14 @@ For very long tasks that might timeout, use the callback loop system.`;
     });
 
     // Prevent readline from closing on errors
-    this.rl.on('error', (error) => {
+    this.rl.on('error', (error: Error) => {
       logger.error('Readline error', error);
       console.error(chalk.red(`\n${UI.ICONS.ERROR} Readline error:`), chalk.gray(formatErrorForDisplay(error)));
       console.log(chalk.gray('The REPL will continue running. Please report this issue if it persists.'));
       // Don't try to prompt again if readline is closed
       // Check if readline is still active by checking if it has listeners
       if (this.rl.listenerCount('line') > 0) {
-        setTimeout(() => processInput(), 100);
+        setTimeout(() => this.rl.prompt(), 100);
       }
     });
 
@@ -827,5 +821,8 @@ For very long tasks that might timeout, use the callback loop system.`;
       console.log(chalk.gray('The REPL will continue running. Please report this issue if it persists.\n'));
       this.rl.prompt();
     });
+
+    // Display initial prompt to show we're ready for input
+    this.rl.prompt();
   }
 }
