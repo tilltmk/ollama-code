@@ -37,16 +37,9 @@ function closeAllDatabases(): void {
   dbCache.clear();
 }
 
-// Register cleanup handlers
+// Register cleanup handler
+// Only use 'exit' handler - let the REPL handle SIGINT/SIGTERM properly
 process.on('exit', closeAllDatabases);
-process.on('SIGINT', () => {
-  closeAllDatabases();
-  process.exit();
-});
-process.on('SIGTERM', () => {
-  closeAllDatabases();
-  process.exit();
-});
 
 /**
  * Get or create a database connection with auto-close and cache management
