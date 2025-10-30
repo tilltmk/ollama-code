@@ -112,6 +112,7 @@ export class Agent {
    * Run the agent with a user message
    */
   async run(userMessage: string, agentConfig: AgentConfig = {}): Promise<string> {
+    console.log('[Agent] Starting run with message:', userMessage);
     const maxIterations = agentConfig.maxIterations || 50; // Increased from 10 to 50
     const maxRetries = agentConfig.maxRetries || 3;
     // Use model from agentConfig, then config.defaultModel, then select based on task
@@ -119,6 +120,7 @@ export class Agent {
                    this.config.defaultModel ||
                    this.modelManager.selectModelForTask('code');
     const verbose = agentConfig.verbose || false;
+    console.log('[Agent] Using model:', model);
 
     // Set system prompt if provided
     if (agentConfig.systemPrompt) {

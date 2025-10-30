@@ -682,6 +682,13 @@ For very long tasks that might timeout, use the callback loop system.`;
         return;
       }
 
+      // Debug logging
+      console.log('[DEBUG] Processing input:', trimmed);
+      console.log('[DEBUG] Agent config:', {
+        verbose: this.verbose,
+        model: this.configManager.get().defaultModel
+      });
+
       // Process with agent
       const spinner = ora({
         text: 'Thinking...',
