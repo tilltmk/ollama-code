@@ -51,10 +51,11 @@ async function main() {
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools = toolManager.getAllTools();
 
-    // Convert tools to MCP format
+    // Convert tools to MCP format using cached schemas
+    const ollamaTools = toolManager.getToolsForOllama();
     const mcpTools: Tool[] = tools.map((tool) => {
-      // Convert Zod schema to JSON Schema
-      const jsonSchema = toolManager.getToolsForOllama()
+      // Get the pre-computed schema from cache
+      const jsonSchema = ollamaTools
         .find(t => t.function.name === tool.name)?.function.parameters;
 
       return {
@@ -67,18 +68,49 @@ async function main() {
     return { tools: mcpTools };
   });
 
-  // Handle tool execution request
+  // Handle tool execution request with improved error handling
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
     try {
+      // Check if tool exists
+      const tool = toolManager.getTool(name);
+      if (!tool) {
+        const availableTools = toolManager.getAllTools().map(t => t.name).join(', ');
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Tool not found: ${name}. Available tools: ${availableTools}`,
+            },
+          ],
+        };
+      }
+
+      // Validate arguments against schema
+      const validation = tool.schema.safeParse(args || {});
+      if (!validation.success) {
+        const errorDetails = validation.error.errors
+          .map((e: any) => `${e.path.join('.')}: ${e.message}`)
+          .join(', ');
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Invalid arguments for ${name}: ${errorDetails}`,
+            },
+          ],
+        };
+      }
+
       // Create a ToolCall object for execution
       const toolCall = {
-        id: `call_${Date.now()}`,
+        id: `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         type: 'function' as const,
         function: {
           name,
-          arguments: JSON.stringify(args || {}),
+          arguments: JSON.stringify(validation.data),
         },
       };
 
@@ -100,10 +132,9 @@ async function main() {
         content: [
           {
             type: 'text',
-            text: `Error executing tool ${name}: ${errorMessage}`,
+            text: `Tool execution failed: ${errorMessage}`,
           },
         ],
-        isError: true,
       };
     }
   });
@@ -116,6 +147,22 @@ async function main() {
   console.error('Ollama Code MCP Server started');
   console.error(`Available tools: ${toolManager.getAllTools().length}`);
   console.error(`Ollama URL: ${config.ollamaUrl}`);
+
+  // Handle graceful shutdown
+  const signals = ['SIGINT', 'SIGTERM'];
+  for (const signal of signals) {
+    process.on(signal, async () => {
+      console.error(`\n${signal} received, shutting down gracefully...`);
+      try {
+        await server.close();
+        console.error('Server closed successfully');
+        process.exit(0);
+      } catch (error) {
+        console.error('Error during shutdown:', error);
+        process.exit(1);
+      }
+    });
+  }
 }
 
 main().catch((error) => {

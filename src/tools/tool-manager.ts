@@ -1,14 +1,21 @@
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { Tool, ToolDefinition, ToolCall } from '../types/index.js';
+import { logger } from '../utils/logger.js';
+import { ValidationError, ToolExecutionError } from '../utils/errors.js';
 
 export class ToolManager {
   private tools: Map<string, ToolDefinition> = new Map();
+  // PERFORMANCE: Cache for Zod schema conversions to avoid repeated processing
+  private schemaCache: Map<string, any> = new Map();
 
   /**
    * Register a new tool
    */
   registerTool(definition: ToolDefinition): void {
     this.tools.set(definition.name, definition);
+    // Clear cache entry when tool is re-registered
+    this.schemaCache.delete(definition.name);
   }
 
   /**
@@ -35,128 +42,132 @@ export class ToolManager {
   }
 
   /**
-   * Convert Zod schema to JSON Schema format for Ollama
+   * Convert Zod schema to JSON Schema format using zod-to-json-schema library
    */
-  private zodToJsonSchema(schema: z.ZodType<any>): any {
-    // This is a simplified conversion
-    // For production, consider using a library like zod-to-json-schema
-
-    if (schema instanceof z.ZodObject) {
-      const shape = (schema as any).shape;
-      const properties: Record<string, any> = {};
-      const required: string[] = [];
-
-      for (const [key, value] of Object.entries(shape)) {
-        properties[key] = this.zodToJsonSchema(value as z.ZodType<any>);
-        if (!(value instanceof z.ZodOptional)) {
-          required.push(key);
-        }
-      }
-
-      return {
-        type: 'object',
-        properties,
-        required: required.length > 0 ? required : undefined,
-      };
-    }
-
-    if (schema instanceof z.ZodString) {
-      return {
-        type: 'string',
-        description: (schema as any)._def?.description,
-      };
-    }
-
-    if (schema instanceof z.ZodNumber) {
-      return {
-        type: 'number',
-        description: (schema as any)._def?.description,
-      };
-    }
-
-    if (schema instanceof z.ZodBoolean) {
-      return {
-        type: 'boolean',
-        description: (schema as any)._def?.description,
-      };
-    }
-
-    if (schema instanceof z.ZodArray) {
-      return {
-        type: 'array',
-        items: this.zodToJsonSchema((schema as any)._def?.type),
-        description: (schema as any)._def?.description,
-      };
-    }
-
-    if (schema instanceof z.ZodOptional) {
-      return this.zodToJsonSchema((schema as any)._def?.innerType);
-    }
-
-    if (schema instanceof z.ZodEnum) {
-      return {
-        type: 'string',
-        enum: (schema as any)._def?.values,
-        description: (schema as any)._def?.description,
-      };
-    }
-
-    // Fallback
-    return { type: 'string' };
+  private convertZodToJsonSchema(schema: z.ZodType<any>): any {
+    return zodToJsonSchema(schema, {
+      target: 'openApi3',
+      $refStrategy: 'none'
+    });
   }
 
   /**
    * Convert tool definitions to Ollama-compatible format
+   *
+   * PERFORMANCE: Cache schema conversions to avoid repeated Zod processing
    */
   getToolsForOllama(): Tool[] {
-    return Array.from(this.tools.values()).map(tool => ({
-      type: 'function',
-      function: {
-        name: tool.name,
-        description: tool.description,
-        parameters: this.zodToJsonSchema(tool.schema),
-      },
-    }));
+    return Array.from(this.tools.values()).map(tool => {
+      // Check cache first
+      let jsonSchema = this.schemaCache.get(tool.name);
+
+      if (!jsonSchema) {
+        // Convert and cache
+        jsonSchema = this.convertZodToJsonSchema(tool.schema);
+        this.schemaCache.set(tool.name, jsonSchema);
+      }
+
+      return {
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: jsonSchema,
+        },
+      };
+    });
   }
 
   /**
    * Execute a tool call
    */
   async executeTool(toolCall: ToolCall): Promise<any> {
-    const tool = this.tools.get(toolCall.function.name);
+    const toolName = toolCall.function.name;
+    const tool = this.tools.get(toolName);
+
     if (!tool) {
-      throw new Error(`Tool not found: ${toolCall.function.name}`);
+      const error = new ToolExecutionError(`Tool not found: ${toolName}`, toolName);
+      logger.error('Tool not found', error, { toolName, availableTools: Array.from(this.tools.keys()) });
+      throw error;
     }
+
+    logger.tool(toolName, 'start', { callId: toolCall.id });
 
     // Parse and validate arguments
     let args: any;
     try {
       args = JSON.parse(toolCall.function.arguments);
     } catch (error) {
-      throw new Error(`Invalid tool arguments JSON: ${error}`);
+      const parseError = new ValidationError(
+        `Invalid tool arguments JSON for ${toolName}`,
+        'arguments',
+        toolCall.function.arguments
+      );
+      logger.error('Failed to parse tool arguments', error, { toolName, arguments: toolCall.function.arguments });
+      throw parseError;
     }
 
     // Validate with Zod schema
-    const validatedArgs = tool.schema.parse(args);
+    try {
+      const validatedArgs = tool.schema.parse(args);
 
-    // Execute the tool
-    return await tool.executor(validatedArgs);
+      // Execute the tool
+      const result = await tool.executor(validatedArgs);
+      logger.tool(toolName, 'success', { callId: toolCall.id });
+      return result;
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const validationError = new ValidationError(
+          `Validation failed for tool ${toolName}: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`,
+          error.errors[0]?.path.join('.'),
+          args
+        );
+        logger.error('Tool validation failed', validationError, {
+          toolName,
+          zodErrors: error.errors,
+          arguments: args
+        });
+        throw validationError;
+      }
+
+      // Tool execution error
+      const executionError = new ToolExecutionError(
+        `Failed to execute tool ${toolName}: ${error instanceof Error ? error.message : String(error)}`,
+        toolName,
+        error instanceof Error ? error : undefined
+      );
+      logger.tool(toolName, 'error', {
+        callId: toolCall.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw executionError;
+    }
   }
 
   /**
    * Execute multiple tool calls in parallel
    */
   async executeTools(toolCalls: ToolCall[]): Promise<Array<{ id: string; result: any; error?: string }>> {
+    logger.info(`Executing ${toolCalls.length} tool call(s) in parallel`, {
+      tools: toolCalls.map(tc => tc.function.name)
+    });
+
     return Promise.all(
       toolCalls.map(async (call) => {
         try {
           const result = await this.executeTool(call);
           return { id: call.id, result };
         } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          logger.error(`Tool call failed: ${call.function.name}`, error, {
+            callId: call.id,
+            toolName: call.function.name
+          });
+
           return {
             id: call.id,
             result: null,
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessage,
           };
         }
       })
