@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { SimpleREPL } from './cli/repl-simple.js';
+import { InteractiveREPL } from './cli/repl-interactive.js';
 import chalk from 'chalk';
 import { OllamaClient } from './llm/ollama-client.js';
 import { ConfigManager } from './config/index.js';
@@ -74,7 +74,7 @@ program
     // Determine verbose mode: default is true unless --quiet is specified
     const verbose = options.quiet ? false : true;
 
-    const repl = new SimpleREPL({
+    const repl = new InteractiveREPL({
       verbose,
       config: configManager.get()
     });

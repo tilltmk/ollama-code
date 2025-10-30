@@ -12,22 +12,25 @@ import { logger } from '../utils/logger.js';
 import { formatErrorForDisplay } from '../utils/index.js';
 import { COMMANDS } from '../constants/index.js';
 
-export interface SimpleREPLOptions {
+export interface InteractiveREPLOptions {
   verbose?: boolean;
   config?: Config;
 }
 
-export class SimpleREPL {
+export class InteractiveREPL {
   private agent: Agent;
   private modelManager: ModelManager;
   private toolManager: ToolManager;
   private configManager: ConfigManager;
-  private rl: readline.Interface;
+  private rl: readline.Interface | null = null;
   private verbose: boolean = false;
   private callbackLoop: CallbackLoop;
   private messageCount: number = 0;
+  private isProcessing: boolean = false;
+  private inputBuffer: string[] = [];
+  private isPiped: boolean = false;
 
-  constructor(options: SimpleREPLOptions = {}) {
+  constructor(options: InteractiveREPLOptions = {}) {
     this.verbose = options.verbose !== undefined ? options.verbose : true;
     this.configManager = new ConfigManager();
 
@@ -47,16 +50,8 @@ export class SimpleREPL {
 
     setCallbackLoop(this.callbackLoop);
 
-    // Create readline interface with proper configuration
-    // For piped input, we need to keep terminal:false to prevent issues
-    const isTTY = process.stdin.isTTY && process.stdout.isTTY;
-
-    this.rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: isTTY, // Only use terminal mode in actual TTY
-      prompt: chalk.cyan.bold('💻 ollama-code ❯ ')
-    });
+    // Detect if input is piped
+    this.isPiped = !process.stdin.isTTY;
   }
 
   private async initialize(): Promise<void> {
@@ -91,7 +86,7 @@ Current working directory: ${process.cwd()}`;
 
   private displayWelcome(): void {
     console.log(chalk.blue.bold('\n╔═══════════════════════════════════════════╗'));
-    console.log(chalk.blue.bold('║    🚀 Ollama Code Assistant (Simple)      ║'));
+    console.log(chalk.blue.bold('║    🚀 Ollama Code Assistant (Interactive)  ║'));
     console.log(chalk.blue.bold('╚═══════════════════════════════════════════╝'));
     console.log(chalk.gray('  100% Local • 100% Free • 100% Private\n'));
 
@@ -200,98 +195,116 @@ Current working directory: ${process.cwd()}`;
     return false;
   }
 
-  private setupPrompt(): void {
-    // Set the prompt string
-    this.rl.setPrompt(chalk.cyan.bold('💻 ollama-code ❯ '));
+  private async processInput(input: string): Promise<void> {
+    const trimmed = input.trim();
 
-    // Track if we're in piped mode
-    const isPiped = !process.stdin.isTTY;
-    let inputEnded = false;
+    if (!trimmed) {
+      return;
+    }
 
-    // Handle line events
-    this.rl.on('line', async (input) => {
-      const trimmed = input.trim();
+    // Handle special commands
+    const handled = await this.handleCommand(trimmed);
+    if (handled) {
+      return;
+    }
 
-      if (!trimmed) {
-        // In piped mode, keep running even with empty lines
-        if (!inputEnded) {
-          this.rl.prompt();
-        }
-        return;
-      }
+    // Process with agent
+    try {
+      const spinner = ora({
+        text: chalk.cyan('Thinking...'),
+        spinner: 'dots',
+        color: 'cyan'
+      }).start();
 
-      // Handle special commands
-      const handled = await this.handleCommand(trimmed);
-      if (handled) {
-        // Don't exit after commands in piped mode
-        if (!inputEnded) {
-          this.rl.prompt();
-        }
-        return;
-      }
+      const startTime = Date.now();
+      const response = await this.agent.run(trimmed, {
+        verbose: false, // Don't show verbose output in REPL
+      });
+      const duration = Date.now() - startTime;
 
-      // Process with agent
-      try {
-        const spinner = ora({
-          text: chalk.cyan('Thinking...'),
-          spinner: 'dots',
-          color: 'cyan'
-        }).start();
+      spinner.succeed(chalk.green(`Response in ${(duration / 1000).toFixed(1)}s`));
 
-        const startTime = Date.now();
-        const response = await this.agent.run(trimmed, {
-          verbose: false, // Don't show verbose output in REPL
-        });
-        const duration = Date.now() - startTime;
+      this.messageCount++;
 
-        spinner.succeed(chalk.green(`Response in ${(duration / 1000).toFixed(1)}s`));
+      // Format response with better line breaks
+      console.log(chalk.gray('\n' + '─'.repeat(60)));
+      console.log(chalk.white(response));
+      console.log(chalk.gray('─'.repeat(60)));
 
-        this.messageCount++;
+      // Show context info
+      const history = this.agent.getHistory();
+      const modelName = this.configManager.get().defaultModel;
+      console.log(chalk.dim(`\n📊 Context: ${history.length} messages | Model: ${modelName}\n`));
+    } catch (error) {
+      logger.error('Failed to process input', error);
+      console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
+    }
+  }
 
-        // Format response with better line breaks
-        console.log(chalk.gray('\n' + '─'.repeat(60)));
-        console.log(chalk.white(response));
-        console.log(chalk.gray('─'.repeat(60)));
+  private async processInputBuffer(): Promise<void> {
+    if (this.isProcessing || this.inputBuffer.length === 0) {
+      return;
+    }
 
-        // Show context info
-        const history = this.agent.getHistory();
-        const modelName = this.configManager.get().defaultModel;
-        console.log(chalk.dim(`\n📊 Context: ${history.length} messages | Model: ${modelName}\n`));
-      } catch (error) {
-        logger.error('Failed to process input', error);
-        console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
-      }
+    this.isProcessing = true;
 
-      // Show prompt again (even in piped mode, until EOF)
-      if (!inputEnded) {
+    while (this.inputBuffer.length > 0) {
+      const input = this.inputBuffer.shift()!;
+      await this.processInput(input);
+
+      // Show prompt after each response if in TTY mode
+      if (!this.isPiped && this.rl) {
         this.rl.prompt();
       }
+    }
+
+    this.isProcessing = false;
+  }
+
+  private setupInteractiveMode(): void {
+    // Create readline interface for interactive mode
+    this.rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: true,
+      prompt: chalk.cyan.bold('💻 ollama-code ❯ ')
     });
 
-    // Handle stdin end event (EOF in piped mode)
-    process.stdin.on('end', () => {
-      if (isPiped) {
-        inputEnded = true;
-        // In piped mode, keep the process running instead of exiting
-        // This allows the REPL to process all input before the process ends naturally
-        // Wait a moment for any pending operations to complete
-        setTimeout(() => {
-          // Only exit if we were actually in piped mode
-          if (!process.stdin.isTTY) {
-            console.log(chalk.cyan.bold('\n\n👋 Session complete!'));
-            process.exit(0);
-          }
-        }, 100);
-      }
+    this.rl.on('line', async (input) => {
+      this.inputBuffer.push(input);
+      await this.processInputBuffer();
     });
 
-    // Handle close event (only for interactive mode)
     this.rl.on('close', () => {
-      // Only exit immediately in interactive mode
-      if (process.stdin.isTTY) {
-        console.log(chalk.cyan.bold('\n\n👋 Goodbye!'));
+      console.log(chalk.cyan.bold('\n\n👋 Goodbye!'));
+      process.exit(0);
+    });
+
+    // Show initial prompt
+    this.rl.prompt();
+  }
+
+  private async setupPipedMode(): Promise<void> {
+    // For piped mode, read all input line by line
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: false
+    });
+
+    console.log(chalk.gray('💻 Running in piped mode...\n'));
+
+    rl.on('line', async (input) => {
+      // Process each line immediately
+      await this.processInput(input);
+    });
+
+    rl.on('close', () => {
+      // Wait for any pending operations to complete
+      setTimeout(() => {
+        console.log(chalk.cyan.bold('\n👋 Session complete!'));
         process.exit(0);
-      }
+      }, 500);
     });
   }
 
@@ -301,7 +314,7 @@ Current working directory: ${process.cwd()}`;
     try {
       await this.initialize();
       console.log(chalk.green('✔ Ready!'));
-      logger.info('Simple REPL initialized successfully');
+      logger.info('Interactive REPL initialized successfully');
     } catch (error) {
       logger.error('Failed to initialize REPL', error);
       console.error(chalk.red('Failed to initialize:'), chalk.gray(formatErrorForDisplay(error)));
@@ -310,10 +323,14 @@ Current working directory: ${process.cwd()}`;
     }
 
     this.displayWelcome();
-    this.setupPrompt();
 
-    // Show initial prompt
-    this.rl.prompt();
+    if (this.isPiped) {
+      // Piped mode: process input line by line
+      await this.setupPipedMode();
+    } else {
+      // Interactive mode: set up normal REPL
+      this.setupInteractiveMode();
+    }
 
     // Handle SIGINT
     process.on('SIGINT', () => {
