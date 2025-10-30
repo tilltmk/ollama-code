@@ -105,7 +105,25 @@ Remember: ACT, don't DESCRIBE. Use the tools immediately when needed!`;
   }
 
   private async initialize(): Promise<void> {
+    // Register tools first
+    const { fileTools, grepTool, bashTool, sqliteTools, httpTools, callbackLoopTools } = await import('../tools/index.js');
+
+    const tools = [
+      ...fileTools,
+      grepTool,
+      bashTool,
+      ...sqliteTools,
+      ...httpTools,
+      ...callbackLoopTools,
+    ];
+
+    this.toolManager.registerTools(tools);
+
+    // Initialize model manager and callback loop
     await this.modelManager.initialize();
+    await this.callbackLoop.initialize();
+
+    // Set system prompt
     this.agent.setSystemPrompt(this.getSystemPrompt());
   }
 
