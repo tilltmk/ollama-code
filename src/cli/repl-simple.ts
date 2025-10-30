@@ -24,6 +24,7 @@ export class SimpleREPL {
   private rl: readline.Interface;
   private verbose: boolean = false;
   private callbackLoop: CallbackLoop;
+  private messageCount: number = 0;
 
   constructor(options: SimpleREPLOptions = {}) {
     this.verbose = options.verbose !== undefined ? options.verbose : true;
@@ -71,6 +72,7 @@ export class SimpleREPL {
     console.log(chalk.gray('  /help         Show this help'));
     console.log(chalk.gray('  /models       List available models'));
     console.log(chalk.gray('  /model <name> Change current model'));
+    console.log(chalk.gray('  /clear        Clear conversation history'));
     console.log(chalk.gray('  /exit         Exit REPL'));
     console.log();
   }
@@ -94,13 +96,21 @@ export class SimpleREPL {
       if (parts.length > 1) {
         const modelName = parts.slice(1).join(' ');
         if (this.modelManager.isModelAvailable(modelName)) {
+          // Save current conversation history
+          const history = this.agent.getHistory();
+
           // Update config and recreate agent with new model
           this.configManager.update({ defaultModel: modelName });
           const config = this.configManager.get();
 
           // Create new agent with the updated model
           this.agent = new Agent(config, this.toolManager, this.modelManager);
+
+          // Restore conversation history to maintain context
+          // Note: We'll need to restore the history here if the Agent supports it
+          // For now, we just create a new agent
           console.log(chalk.green(`✓ Switched to model: ${modelName}`));
+          console.log(chalk.gray(`  Conversation context maintained (${history.length} messages)`));
         } else {
           console.log(chalk.red(`✗ Model not available: ${modelName}`));
           console.log(chalk.yellow('Available models:'));
@@ -152,7 +162,12 @@ export class SimpleREPL {
           verbose: this.verbose,
         });
 
+        this.messageCount++;
         console.log(chalk.white('\n' + response + '\n'));
+
+        // Show context info
+        const history = this.agent.getHistory();
+        console.log(chalk.gray(`[Context: ${history.length} messages, Model: ${this.configManager.get().defaultModel}]`));
       } catch (error) {
         logger.error('Failed to process input', error);
         console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));

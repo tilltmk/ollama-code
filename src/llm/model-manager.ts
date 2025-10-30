@@ -34,6 +34,39 @@ export class ModelManager {
 
   // Model capabilities and preferences
   private modelPreferences: Record<string, ModelInfo> = {
+    // Granite models (prioritized for user)
+    'granite3.3:8b': {
+      name: 'granite3.3:8b',
+      displayName: 'Granite 3.3 8B',
+      description: 'IBM Granite 8B - Excellent for code and tool use',
+      size: 8,
+      bestFor: ['code', 'reasoning', 'tools'],
+      priority: 1,
+    },
+    'granite3.3:2b': {
+      name: 'granite3.3:2b',
+      displayName: 'Granite 3.3 2B',
+      description: 'IBM Granite 2B - Fast and efficient',
+      size: 2,
+      bestFor: ['code', 'reasoning', 'tools'],
+      priority: 1,
+    },
+    'granite4:micro': {
+      name: 'granite4:micro',
+      displayName: 'Granite 4 Micro',
+      description: 'Latest Granite micro model',
+      size: 2,
+      bestFor: ['code', 'reasoning', 'tools'],
+      priority: 1,
+    },
+    'ibm/granite3.3:2b-base': {
+      name: 'ibm/granite3.3:2b-base',
+      displayName: 'IBM Granite 3.3 Base',
+      description: 'IBM official Granite base model',
+      size: 2,
+      bestFor: ['code', 'reasoning', 'tools'],
+      priority: 2,
+    },
     'granite': {
       name: 'granite',
       displayName: 'Granite',
