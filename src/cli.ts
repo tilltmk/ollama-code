@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { EnhancedREPL } from './cli/repl-enhanced.js';
+import { REPL } from './cli/repl.js';
 import chalk from 'chalk';
 import { OllamaClient } from './llm/ollama-client.js';
 import { ConfigManager } from './config/index.js';
+import { logger } from './utils/logger.js';
+import { NetworkError, formatErrorForDisplay } from './utils/errors.js';
 
 const program = new Command();
 
@@ -27,15 +29,31 @@ program
     // Health check
     const ollamaUrl = options.url || process.env.OLLAMA_URL || 'http://localhost:11434';
     const client = new OllamaClient(ollamaUrl);
-    const isHealthy = await client.healthCheck();
 
-    if (!isHealthy) {
-      console.error(chalk.red('Error: Cannot connect to Ollama server'));
-      console.error(chalk.gray(`Tried: ${ollamaUrl}`));
-      console.error(chalk.gray('\nPlease ensure Ollama is running:'));
-      console.error(chalk.gray('  ollama serve'));
-      console.error(chalk.gray('\nOr check if Ollama is installed:'));
-      console.error(chalk.gray('  https://ollama.ai'));
+    try {
+      const isHealthy = await client.healthCheck();
+
+      if (!isHealthy) {
+        const error = new NetworkError('Cannot connect to Ollama server', ollamaUrl);
+        logger.error('Ollama connection failed', error, { url: ollamaUrl });
+
+        console.error(chalk.red(`Error: ${error.message}`));
+        console.error(chalk.gray(`Tried: ${ollamaUrl}`));
+        console.error(chalk.gray('\nPlease ensure Ollama is running:'));
+        console.error(chalk.gray('  ollama serve'));
+        console.error(chalk.gray('\nOr check if Ollama is installed:'));
+        console.error(chalk.gray('  https://ollama.ai'));
+        process.exit(1);
+      }
+
+      logger.info('Connected to Ollama server', { url: ollamaUrl });
+    } catch (error) {
+      const networkError = new NetworkError('Failed to connect to Ollama server', ollamaUrl);
+      logger.error('Ollama health check failed', error, { url: ollamaUrl });
+
+      console.error(chalk.red(formatErrorForDisplay(networkError)));
+      console.error(chalk.gray(`URL: ${ollamaUrl}`));
+      console.error(chalk.gray('\nPlease ensure Ollama is running and accessible.'));
       process.exit(1);
     }
 
@@ -59,7 +77,7 @@ program
     // Determine if sub-agents should be enabled
     const enableSubAgents = options.enableSubagents || false;
 
-    const repl = new EnhancedREPL({
+    const repl = new REPL({
       verbose,
       enableSubAgents,
       config: configManager.get()
@@ -83,6 +101,8 @@ program
     const client = new OllamaClient();
     try {
       const response = await client.listModels();
+      logger.info('Listed available models', { count: response.models.length });
+
       console.log(chalk.yellow('\nAvailable Ollama models:\n'));
       for (const model of response.models) {
         const size = (model.size / 1024 / 1024 / 1024).toFixed(2);
@@ -92,7 +112,8 @@ program
         console.log();
       }
     } catch (error) {
-      console.error(chalk.red('Error listing models:'), error);
+      logger.error('Failed to list models', error);
+      console.error(chalk.red(formatErrorForDisplay(error)));
       process.exit(1);
     }
   });
@@ -102,14 +123,23 @@ program
   .description('Check Ollama server health')
   .action(async () => {
     const client = new OllamaClient();
-    const isHealthy = await client.healthCheck();
+    try {
+      const isHealthy = await client.healthCheck();
 
-    if (isHealthy) {
-      console.log(chalk.green('✓ Ollama server is running'));
-      const response = await client.listModels();
-      console.log(chalk.gray(`  ${response.models.length} models available`));
-    } else {
-      console.log(chalk.red('✗ Ollama server is not accessible'));
+      if (isHealthy) {
+        logger.info('Ollama server health check passed');
+        console.log(chalk.green('✓ Ollama server is running'));
+        const response = await client.listModels();
+        console.log(chalk.gray(`  ${response.models.length} models available`));
+      } else {
+        const error = new NetworkError('Ollama server is not accessible');
+        logger.error('Ollama server health check failed', error);
+        console.log(chalk.red('✗ Ollama server is not accessible'));
+        process.exit(1);
+      }
+    } catch (error) {
+      logger.error('Failed to check Ollama server health', error);
+      console.error(chalk.red(formatErrorForDisplay(error)));
       process.exit(1);
     }
   });
