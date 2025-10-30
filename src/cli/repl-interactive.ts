@@ -26,8 +26,6 @@ export class InteractiveREPL {
   private verbose: boolean = false;
   private callbackLoop: CallbackLoop;
   private messageCount: number = 0;
-  private isProcessing: boolean = false;
-  private inputBuffer: string[] = [];
   private isPiped: boolean = false;
 
   constructor(options: InteractiveREPLOptions = {}) {
@@ -241,25 +239,6 @@ Current working directory: ${process.cwd()}`;
     }
   }
 
-  private async processInputBuffer(): Promise<void> {
-    if (this.isProcessing || this.inputBuffer.length === 0) {
-      return;
-    }
-
-    this.isProcessing = true;
-
-    while (this.inputBuffer.length > 0) {
-      const input = this.inputBuffer.shift()!;
-      await this.processInput(input);
-
-      // Show prompt after each response if in TTY mode
-      if (!this.isPiped && this.rl) {
-        this.rl.prompt();
-      }
-    }
-
-    this.isProcessing = false;
-  }
 
   private setupInteractiveMode(): void {
     // Create readline interface for interactive mode
@@ -271,8 +250,54 @@ Current working directory: ${process.cwd()}`;
     });
 
     this.rl.on('line', async (input) => {
-      this.inputBuffer.push(input);
-      await this.processInputBuffer();
+      const trimmed = input.trim();
+
+      if (!trimmed) {
+        this.rl!.prompt();
+        return;
+      }
+
+      // Handle special commands
+      const handled = await this.handleCommand(trimmed);
+      if (handled) {
+        this.rl!.prompt();
+        return;
+      }
+
+      // Process with agent
+      try {
+        const spinner = ora({
+          text: chalk.cyan('Thinking...'),
+          spinner: 'dots',
+          color: 'cyan'
+        }).start();
+
+        const startTime = Date.now();
+        const response = await this.agent.run(trimmed, {
+          verbose: false, // Don't show verbose output in REPL
+        });
+        const duration = Date.now() - startTime;
+
+        spinner.succeed(chalk.green(`Response in ${(duration / 1000).toFixed(1)}s`));
+
+        this.messageCount++;
+
+        // Format response with better line breaks
+        console.log(chalk.gray('\n' + '─'.repeat(60)));
+        console.log(chalk.white(response));
+        console.log(chalk.gray('─'.repeat(60)));
+
+        // Show context info
+        const history = this.agent.getHistory();
+        const modelName = this.configManager.get().defaultModel;
+        console.log(chalk.dim(`\n📊 Context: ${history.length} messages | Model: ${modelName}\n`));
+      } catch (error) {
+        logger.error('Failed to process input', error);
+        console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
+      }
+
+      // IMPORTANT: Show prompt again for next input
+      this.rl!.prompt();
     });
 
     this.rl.on('close', () => {
@@ -294,17 +319,54 @@ Current working directory: ${process.cwd()}`;
 
     console.log(chalk.gray('💻 Running in piped mode...\n'));
 
-    rl.on('line', async (input) => {
-      // Process each line immediately
+    const inputLines: string[] = [];
+    let processing = false;
+
+    const processNextLine = async () => {
+      if (processing || inputLines.length === 0) {
+        return;
+      }
+
+      processing = true;
+      const input = inputLines.shift()!;
+
+      // Check if this is the exit command
+      const trimmed = input.trim().toLowerCase();
+      if (trimmed === COMMANDS.EXIT || trimmed === COMMANDS.QUIT) {
+        console.log(chalk.cyan.bold('\n👋 Goodbye!'));
+        process.exit(0);
+      }
+
+      // Process the input
       await this.processInput(input);
+
+      processing = false;
+
+      // Process next line if available
+      if (inputLines.length > 0) {
+        // Small delay to allow output to be displayed
+        setTimeout(processNextLine, 100);
+      }
+    };
+
+    rl.on('line', (input) => {
+      // Queue the input
+      inputLines.push(input);
+      // Start processing if not already doing so
+      processNextLine();
     });
 
     rl.on('close', () => {
       // Wait for any pending operations to complete
-      setTimeout(() => {
-        console.log(chalk.cyan.bold('\n👋 Session complete!'));
-        process.exit(0);
-      }, 500);
+      const checkComplete = () => {
+        if (inputLines.length === 0 && !processing) {
+          console.log(chalk.cyan.bold('\n👋 Session complete!'));
+          process.exit(0);
+        } else {
+          setTimeout(checkComplete, 500);
+        }
+      };
+      setTimeout(checkComplete, 500);
     });
   }
 
