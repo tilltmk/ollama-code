@@ -297,8 +297,10 @@ Current working directory: ${process.cwd()}`;
     }
   }
 
+  private keepAliveInterval: NodeJS.Timeout | null = null;
+
   private setupInteractiveMode(): void {
-    // Create readline interface for interactive mode
+    // Create readline interface for interactive mode FIRST
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
@@ -306,30 +308,38 @@ Current working directory: ${process.cwd()}`;
       prompt: chalk.cyan.bold('💻 ollama-code ❯ ')
     });
 
-    this.rl.on('line', (input) => {
-      // Process the input asynchronously but don't use async handler
-      // to prevent readline from potentially closing on promise rejection
-      this.processInteractiveInput(input).catch((error) => {
+    // CRITICAL: Keep event loop alive with interval
+    this.keepAliveInterval = setInterval(() => {
+      // Just keep the process alive
+    }, 1000);
+
+    this.rl.on('line', async (input) => {
+      try {
+        await this.processInteractiveInput(input);
+      } catch (error) {
         logger.error('Error processing input:', error);
         console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
-        // Always show prompt again even on error
-        if (this.rl && !(this.rl as any).closed) {
+        if (this.rl) {
           this.rl.prompt();
         }
-      });
+      }
     });
 
     this.rl.on('close', () => {
-      // Only exit if it was an intentional close (Ctrl+C or /exit)
-      // Don't exit on unexpected closes
+      logger.info('Readline close event - cleaning up');
+      if (this.keepAliveInterval) {
+        clearInterval(this.keepAliveInterval);
+      }
       if (!this.isPiped) {
         console.log(chalk.cyan.bold('\n\n👋 Goodbye!'));
         process.exit(0);
       }
     });
 
-    // Prevent the readline from closing unexpectedly
     this.rl.on('SIGINT', () => {
+      if (this.keepAliveInterval) {
+        clearInterval(this.keepAliveInterval);
+      }
       console.log(chalk.cyan.bold('\n\n👋 Goodbye!'));
       process.exit(0);
     });
@@ -421,17 +431,7 @@ Current working directory: ${process.cwd()}`;
     } else {
       // Interactive mode: set up normal REPL
       this.setupInteractiveMode();
-
-      // Keep the process alive for interactive mode
-      // Prevent the Node.js process from exiting when the event loop is empty
-      process.stdin.resume();
     }
-
-    // Handle SIGINT globally
-    process.on('SIGINT', () => {
-      console.log(chalk.cyan.bold('\n\n👋 Goodbye!'));
-      process.exit(0);
-    });
 
     // Catch any unhandled promise rejections
     process.on('unhandledRejection', (reason) => {
