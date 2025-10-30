@@ -94,7 +94,12 @@ export class SimpleREPL {
       if (parts.length > 1) {
         const modelName = parts.slice(1).join(' ');
         if (this.modelManager.isModelAvailable(modelName)) {
+          // Update config and recreate agent with new model
           this.configManager.update({ defaultModel: modelName });
+          const config = this.configManager.get();
+
+          // Create new agent with the updated model
+          this.agent = new Agent(config, this.toolManager, this.modelManager);
           console.log(chalk.green(`✓ Switched to model: ${modelName}`));
         } else {
           console.log(chalk.red(`✗ Model not available: ${modelName}`));
@@ -105,6 +110,13 @@ export class SimpleREPL {
         console.log(chalk.gray('Current model: ' + (this.configManager.get().defaultModel || 'auto')));
         console.log(chalk.gray('Usage: /model <model-name>'));
       }
+      return true;
+    }
+
+    if (trimmed === COMMANDS.CLEAR) {
+      // Clear conversation history
+      this.agent.clearHistory();
+      console.log(chalk.green('✓ Conversation history cleared'));
       return true;
     }
 
