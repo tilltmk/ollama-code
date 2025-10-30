@@ -1,5 +1,6 @@
 import * as readline from 'readline';
 import chalk from 'chalk';
+import ora from 'ora';
 import { Agent } from '../llm/agent.js';
 import { ModelManager } from '../llm/model-manager.js';
 import { ToolManager } from '../tools/tool-manager.js';
@@ -54,6 +55,32 @@ export class SimpleREPL {
 
   private async initialize(): Promise<void> {
     await this.modelManager.initialize();
+
+    // Set system prompt that encourages tool use
+    const systemPrompt = `You are a helpful coding assistant with access to powerful tools.
+
+LANGUAGE: Always respond in the same language as the user's input. If the user writes in German, respond in German. If in English, respond in English.
+SPRACHE: Antworte immer in der gleichen Sprache wie die Eingabe des Nutzers. Wenn der Nutzer auf Deutsch schreibt, antworte auf Deutsch.
+
+IMPORTANT: You have access to the following tools that you SHOULD use when asked about files, code, or the filesystem:
+- read_file: Read contents of files
+- write_file: Write or create files
+- edit_file: Modify existing files
+- glob: Search for files by pattern (e.g. "*.js", "src/**/*.ts")
+- grep: Search for text patterns in files
+- bash: Execute shell commands
+
+When the user asks about:
+- "What files/folders do you see?" → Use glob tool with pattern "*" or "**/*"
+- "Show me the code in X" → Use read_file tool
+- "Search for X" → Use grep tool
+- "Run command X" → Use bash tool
+
+Always prefer using tools over saying "I cannot access files". You DO have access through these tools!
+
+Current working directory: ${process.cwd()}`;
+
+    this.agent.setSystemPrompt(systemPrompt);
   }
 
   private displayWelcome(): void {
@@ -106,11 +133,40 @@ export class SimpleREPL {
           // Create new agent with the updated model
           this.agent = new Agent(config, this.toolManager, this.modelManager);
 
-          // Restore conversation history to maintain context
-          // Note: We'll need to restore the history here if the Agent supports it
-          // For now, we just create a new agent
+          // Re-apply the system prompt
+          const systemPrompt = `You are a helpful coding assistant with access to powerful tools.
+
+LANGUAGE: Always respond in the same language as the user's input. If the user writes in German, respond in German. If in English, respond in English.
+SPRACHE: Antworte immer in der gleichen Sprache wie die Eingabe des Nutzers. Wenn der Nutzer auf Deutsch schreibt, antworte auf Deutsch.
+
+IMPORTANT: You have access to the following tools that you SHOULD use when asked about files, code, or the filesystem:
+- read_file: Read contents of files
+- write_file: Write or create files
+- edit_file: Modify existing files
+- glob: Search for files by pattern (e.g. "*.js", "src/**/*.ts")
+- grep: Search for text patterns in files
+- bash: Execute shell commands
+
+When the user asks about:
+- "What files/folders do you see?" → Use glob tool with pattern "*" or "**/*"
+- "Show me the code in X" → Use read_file tool
+- "Search for X" → Use grep tool
+- "Run command X" → Use bash tool
+
+Always prefer using tools over saying "I cannot access files". You DO have access through these tools!
+
+Current working directory: ${process.cwd()}`;
+
+          this.agent.setSystemPrompt(systemPrompt);
+
+          // Restore conversation history (excluding system message)
+          const userMessages = history.filter(msg => msg.role !== 'system');
+          userMessages.forEach(msg => {
+            this.agent.getHistory().push(msg);
+          });
+
           console.log(chalk.green(`✓ Switched to model: ${modelName}`));
-          console.log(chalk.gray(`  Conversation context maintained (${history.length} messages)`));
+          console.log(chalk.gray(`  Conversation context maintained (${userMessages.length} messages)`));
         } else {
           console.log(chalk.red(`✗ Model not available: ${modelName}`));
           console.log(chalk.yellow('Available models:'));
@@ -156,18 +212,31 @@ export class SimpleREPL {
 
       // Process with agent
       try {
-        console.log(chalk.gray('⏳ Thinking...'));
+        const spinner = ora({
+          text: chalk.cyan('Thinking...'),
+          spinner: 'dots',
+          color: 'cyan'
+        }).start();
 
+        const startTime = Date.now();
         const response = await this.agent.run(trimmed, {
-          verbose: this.verbose,
+          verbose: false, // Don't show verbose output in REPL
         });
+        const duration = Date.now() - startTime;
+
+        spinner.succeed(chalk.green(`Response in ${(duration / 1000).toFixed(1)}s`));
 
         this.messageCount++;
-        console.log(chalk.white('\n' + response + '\n'));
+
+        // Format response with better line breaks
+        console.log(chalk.gray('\n' + '─'.repeat(60)));
+        console.log(chalk.white(response));
+        console.log(chalk.gray('─'.repeat(60)));
 
         // Show context info
         const history = this.agent.getHistory();
-        console.log(chalk.gray(`[Context: ${history.length} messages, Model: ${this.configManager.get().defaultModel}]`));
+        const modelName = this.configManager.get().defaultModel;
+        console.log(chalk.dim(`\n📊 Context: ${history.length} messages | Model: ${modelName}\n`));
       } catch (error) {
         logger.error('Failed to process input', error);
         console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
