@@ -2,7 +2,6 @@
 
 import { Command } from 'commander';
 import { REPL } from './cli/repl.js';
-import { SimpleREPL } from './cli/simple-repl.js';
 import chalk from 'chalk';
 import { OllamaClient } from './llm/ollama-client.js';
 import { ConfigManager } from './config/index.js';
@@ -26,7 +25,6 @@ program
   .option('--enable-subagents', 'Enable sub-agent delegation (disabled by default)')
   .option('--url <url>', 'Ollama server URL (default: http://localhost:11434)')
   .option('-t, --temperature <number>', 'Temperature for generation (0.0-1.0)', parseFloat)
-  .option('--simple', 'Use simple REPL mode (more reliable but fewer features)')
   .action(async (promptArgs: string[], options) => {
     // Health check
     const ollamaUrl = options.url || process.env.OLLAMA_URL || 'http://localhost:11434';
@@ -79,27 +77,20 @@ program
     // Determine if sub-agents should be enabled
     const enableSubAgents = options.enableSubagents || false;
 
-    // Use simple mode if requested
-    if (options.simple) {
-      console.log(chalk.yellow('Using simple REPL mode...'));
-      const simpleRepl = new SimpleREPL();
-      await simpleRepl.start();
-    } else {
-      const repl = new REPL({
-        verbose,
-        enableSubAgents,
-        config: configManager.get()
-      });
+    const repl = new REPL({
+      verbose,
+      enableSubAgents,
+      config: configManager.get()
+    });
 
-      // Check if prompt was provided
-      const prompt = promptArgs.join(' ').trim();
-      if (prompt) {
-        // Single-shot mode: execute and exit
-        await repl.executeSingleCommand(prompt);
-      } else {
-        // Interactive REPL mode
-        await repl.start();
-      }
+    // Check if prompt was provided
+    const prompt = promptArgs.join(' ').trim();
+    if (prompt) {
+      // Single-shot mode: execute and exit
+      await repl.executeSingleCommand(prompt);
+    } else {
+      // Interactive REPL mode
+      await repl.start();
     }
   });
 

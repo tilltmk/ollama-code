@@ -79,16 +79,32 @@ export class REPL {
     // Ensure stdin stays open
     process.stdin.resume();
 
+    // Detect TTY status
+    const isTTY = process.stdin.isTTY && process.stdout.isTTY;
+
+    // Configure readline based on TTY status
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
       prompt: chalk.cyan.bold(UI.PROMPTS.REPL),
-      terminal: true,
+      terminal: isTTY,
+      // Prevent readline from closing immediately in non-TTY environments
+      completer: isTTY ? undefined : (line: string) => [[], line]
     });
+
+    // Keep stdin from closing in non-TTY environments
+    if (!isTTY) {
+      process.stdin.setRawMode?.(false);
+      process.stdin.on('end', () => {
+        // Prevent stdin from closing
+        process.stdin.pause();
+        process.stdin.resume();
+      });
+    }
 
     console.log('[REPL] Readline interface created');
     console.log('[REPL] Terminal mode:', this.rl.terminal);
-    console.log('[REPL] Input:', process.stdin.isTTY ? 'TTY' : 'Not TTY');
+    console.log('[REPL] Input:', isTTY ? 'TTY' : 'Not TTY');
 
     this.stats = {
       totalRequests: 0,
@@ -642,6 +658,9 @@ For very long tasks that might timeout, use the callback loop system.`;
       process.exit(1);
     }
 
+    // Start the callback loop
+    console.log('[Callback Loop] Starting fresh queue');
+
     this.displayWelcome();
 
     // Keep the process alive
@@ -660,31 +679,31 @@ For very long tasks that might timeout, use the callback loop system.`;
       if (this.multilineMode) {
         if (trimmed === COMMANDS.END) {
           await this.processMultilineBuffer();
-          this.rl.prompt();
+          processInput();
           return;
         } else if (trimmed === COMMANDS.CANCEL) {
           this.multilineMode = false;
           this.multilineBuffer = [];
           this.rl.setPrompt(chalk.cyan.bold(UI.PROMPTS.REPL));
           console.log(chalk.yellow('✗ Multi-line input cancelled'));
-          this.rl.prompt();
+          processInput();
           return;
         } else {
           this.multilineBuffer.push(line);
-          this.rl.prompt();
+          processInput();
           return;
         }
       }
 
       if (!trimmed) {
-        this.rl.prompt();
+        processInput();
         return;
       }
 
       // Handle special commands
       const handled = await this.handleCommand(trimmed);
       if (handled) {
-        this.rl.prompt();
+        processInput();
         return;
       }
 
@@ -738,8 +757,12 @@ For very long tasks that might timeout, use the callback loop system.`;
         console.log();
       }
 
-      this.rl.prompt();
-    });
+        processInput(); // Recursively call for next input
+      });
+    };
+
+    // Start the input loop
+    processInput();
 
     this.rl.on('close', () => {
       clearInterval(keepAlive);
@@ -754,8 +777,12 @@ For very long tasks that might timeout, use the callback loop system.`;
     this.rl.on('error', (error) => {
       logger.error('Readline error', error);
       console.error(chalk.red(`\n${UI.ICONS.ERROR} Readline error:`), chalk.gray(formatErrorForDisplay(error)));
-      console.log(chalk.gray('Attempting to recover...'));
-      this.rl.prompt();
+      console.log(chalk.gray('The REPL will continue running. Please report this issue if it persists.'));
+      // Don't try to prompt again if readline is closed
+      // Check if readline is still active by checking if it has listeners
+      if (this.rl.listenerCount('line') > 0) {
+        setTimeout(() => processInput(), 100);
+      }
     });
 
     // Handle SIGINT (Ctrl+C) gracefully with double-press to exit
