@@ -313,16 +313,16 @@ Current working directory: ${process.cwd()}`;
       // Just keep the process alive
     }, 1000);
 
-    this.rl.on('line', async (input) => {
-      try {
-        await this.processInteractiveInput(input);
-      } catch (error) {
+    this.rl.on('line', (input) => {
+      // DON'T use await here - let it run asynchronously
+      // Otherwise readline will block during processing
+      this.processInteractiveInput(input).catch((error) => {
         logger.error('Error processing input:', error);
         console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
         if (this.rl) {
           this.rl.prompt();
         }
-      }
+      });
     });
 
     this.rl.on('close', () => {
