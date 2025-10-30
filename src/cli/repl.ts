@@ -102,9 +102,6 @@ export class REPL {
       });
     }
 
-    console.log('[REPL] Readline interface created');
-    console.log('[REPL] Terminal mode:', this.rl.terminal);
-    console.log('[REPL] Input:', isTTY ? 'TTY' : 'Not TTY');
 
     this.stats = {
       totalRequests: 0,
@@ -658,8 +655,6 @@ For very long tasks that might timeout, use the callback loop system.`;
       process.exit(1);
     }
 
-    // Start the callback loop
-    console.log('[Callback Loop] Starting fresh queue');
 
     this.displayWelcome();
 
@@ -704,12 +699,6 @@ For very long tasks that might timeout, use the callback loop system.`;
         return;
       }
 
-      // Debug logging
-      console.log('[DEBUG] Processing input:', trimmed);
-      console.log('[DEBUG] Agent config:', {
-        verbose: this.verbose,
-        model: this.configManager.get().defaultModel
-      });
 
       // Process with agent
       const spinner = ora({

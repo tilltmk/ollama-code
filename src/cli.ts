@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { REPL } from './cli/repl.js';
+import { SimpleREPL } from './cli/repl-simple.js';
 import chalk from 'chalk';
 import { OllamaClient } from './llm/ollama-client.js';
 import { ConfigManager } from './config/index.js';
@@ -74,12 +74,8 @@ program
     // Determine verbose mode: default is true unless --quiet is specified
     const verbose = options.quiet ? false : true;
 
-    // Determine if sub-agents should be enabled
-    const enableSubAgents = options.enableSubagents || false;
-
-    const repl = new REPL({
+    const repl = new SimpleREPL({
       verbose,
-      enableSubAgents,
       config: configManager.get()
     });
 
@@ -87,7 +83,25 @@ program
     const prompt = promptArgs.join(' ').trim();
     if (prompt) {
       // Single-shot mode: execute and exit
-      await repl.executeSingleCommand(prompt);
+      // For now, we'll use the simple REPL's agent directly
+      console.log(chalk.yellow('🚀 Starting execution...'));
+      const { Agent } = await import('./llm/agent.js');
+      const { ModelManager } = await import('./llm/model-manager.js');
+      const { ToolManager } = await import('./tools/tool-manager.js');
+
+      const toolManager = new ToolManager();
+      const modelManager = new ModelManager(configManager.get());
+      const agent = new Agent(configManager.get(), toolManager, modelManager);
+
+      await modelManager.initialize();
+
+      try {
+        const response = await agent.run(prompt, { verbose });
+        console.log(chalk.white('\n' + response));
+      } catch (error) {
+        console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}`));
+        process.exit(1);
+      }
     } else {
       // Interactive REPL mode
       await repl.start();
