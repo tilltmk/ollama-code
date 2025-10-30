@@ -249,55 +249,17 @@ Current working directory: ${process.cwd()}`;
       prompt: chalk.cyan.bold('💻 ollama-code ❯ ')
     });
 
-    this.rl.on('line', async (input) => {
-      const trimmed = input.trim();
-
-      if (!trimmed) {
-        this.rl!.prompt();
-        return;
-      }
-
-      // Handle special commands
-      const handled = await this.handleCommand(trimmed);
-      if (handled) {
-        this.rl!.prompt();
-        return;
-      }
-
-      // Process with agent
-      try {
-        const spinner = ora({
-          text: chalk.cyan('Thinking...'),
-          spinner: 'dots',
-          color: 'cyan'
-        }).start();
-
-        const startTime = Date.now();
-        const response = await this.agent.run(trimmed, {
-          verbose: false, // Don't show verbose output in REPL
-        });
-        const duration = Date.now() - startTime;
-
-        spinner.succeed(chalk.green(`Response in ${(duration / 1000).toFixed(1)}s`));
-
-        this.messageCount++;
-
-        // Format response with better line breaks
-        console.log(chalk.gray('\n' + '─'.repeat(60)));
-        console.log(chalk.white(response));
-        console.log(chalk.gray('─'.repeat(60)));
-
-        // Show context info
-        const history = this.agent.getHistory();
-        const modelName = this.configManager.get().defaultModel;
-        console.log(chalk.dim(`\n📊 Context: ${history.length} messages | Model: ${modelName}\n`));
-      } catch (error) {
-        logger.error('Failed to process input', error);
+    this.rl.on('line', (input) => {
+      // Process the input asynchronously but don't use async handler
+      // to prevent readline from potentially closing on promise rejection
+      this.processInteractiveInput(input).catch((error) => {
+        logger.error('Error processing input:', error);
         console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
-      }
-
-      // IMPORTANT: Show prompt again for next input
-      this.rl!.prompt();
+        // Always show prompt again even on error
+        if (this.rl && !this.rl.closed) {
+          this.rl.prompt();
+        }
+      });
     });
 
     this.rl.on('close', () => {
