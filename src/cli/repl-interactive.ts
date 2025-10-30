@@ -240,6 +240,63 @@ Current working directory: ${process.cwd()}`;
   }
 
 
+  private async processInteractiveInput(input: string): Promise<void> {
+    const trimmed = input.trim();
+
+    if (!trimmed) {
+      if (this.rl && !(this.rl as any).closed) {
+        this.rl.prompt();
+      }
+      return;
+    }
+
+    // Handle special commands
+    const handled = await this.handleCommand(trimmed);
+    if (handled) {
+      if (this.rl && !(this.rl as any).closed) {
+        this.rl.prompt();
+      }
+      return;
+    }
+
+    // Process with agent
+    try {
+      const spinner = ora({
+        text: chalk.cyan('Thinking...'),
+        spinner: 'dots',
+        color: 'cyan'
+      }).start();
+
+      const startTime = Date.now();
+      const response = await this.agent.run(trimmed, {
+        verbose: false, // Don't show verbose output in REPL
+      });
+      const duration = Date.now() - startTime;
+
+      spinner.succeed(chalk.green(`Response in ${(duration / 1000).toFixed(1)}s`));
+
+      this.messageCount++;
+
+      // Format response with better line breaks
+      console.log(chalk.gray('\n' + '─'.repeat(60)));
+      console.log(chalk.white(response));
+      console.log(chalk.gray('─'.repeat(60)));
+
+      // Show context info
+      const history = this.agent.getHistory();
+      const modelName = this.configManager.get().defaultModel;
+      console.log(chalk.dim(`\n📊 Context: ${history.length} messages | Model: ${modelName}\n`));
+    } catch (error) {
+      logger.error('Failed to process input', error);
+      console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
+    }
+
+    // IMPORTANT: Always show prompt again for next input
+    if (this.rl) {
+      this.rl.prompt();
+    }
+  }
+
   private setupInteractiveMode(): void {
     // Create readline interface for interactive mode
     this.rl = readline.createInterface({
@@ -256,13 +313,23 @@ Current working directory: ${process.cwd()}`;
         logger.error('Error processing input:', error);
         console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
         // Always show prompt again even on error
-        if (this.rl && !this.rl.closed) {
+        if (this.rl && !(this.rl as any).closed) {
           this.rl.prompt();
         }
       });
     });
 
     this.rl.on('close', () => {
+      // Only exit if it was an intentional close (Ctrl+C or /exit)
+      // Don't exit on unexpected closes
+      if (!this.isPiped) {
+        console.log(chalk.cyan.bold('\n\n👋 Goodbye!'));
+        process.exit(0);
+      }
+    });
+
+    // Prevent the readline from closing unexpectedly
+    this.rl.on('SIGINT', () => {
       console.log(chalk.cyan.bold('\n\n👋 Goodbye!'));
       process.exit(0);
     });
@@ -354,12 +421,26 @@ Current working directory: ${process.cwd()}`;
     } else {
       // Interactive mode: set up normal REPL
       this.setupInteractiveMode();
+
+      // Keep the process alive for interactive mode
+      // Prevent the Node.js process from exiting when the event loop is empty
+      process.stdin.resume();
     }
 
-    // Handle SIGINT
+    // Handle SIGINT globally
     process.on('SIGINT', () => {
       console.log(chalk.cyan.bold('\n\n👋 Goodbye!'));
       process.exit(0);
+    });
+
+    // Catch any unhandled promise rejections
+    process.on('unhandledRejection', (reason) => {
+      logger.error('Unhandled Rejection:', reason);
+      // Don't exit, just log the error and keep running
+      console.error(chalk.yellow('\n⚠️  An error occurred but REPL continues running'));
+      if (this.rl && !this.isPiped) {
+        this.rl.prompt();
+      }
     });
   }
 }
