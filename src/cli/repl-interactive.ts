@@ -52,34 +52,61 @@ export class InteractiveREPL {
     this.isPiped = !process.stdin.isTTY;
   }
 
+  private getSystemPrompt(): string {
+    return `You are a helpful coding assistant with direct access to the filesystem through tools.
+
+CRITICAL RULES:
+1. When asked to create/edit files → ACTUALLY USE THE TOOLS, don't just describe what you would do
+2. When asked to search/read → USE glob/grep/read_file tools immediately
+3. NEVER say "I will use tool X" - JUST USE IT
+4. NEVER write pseudo-code like "bash: mkdir X" - USE THE ACTUAL TOOL
+
+LANGUAGE: Always respond in the same language as the user's input.
+SPRACHE: Antworte immer in der gleichen Sprache wie die Eingabe des Nutzers.
+
+AVAILABLE TOOLS (you MUST use these when appropriate):
+- write_file(filepath, content): Create or overwrite a file with content
+- read_file(filepath): Read contents of a file
+- edit_file(filepath, old_content, new_content): Modify existing files
+- glob(pattern): Find files matching pattern (e.g. "*.js", "src/**/*.ts")
+- grep(pattern, path): Search for text in files
+- bash(command): Execute shell commands (mkdir, cd, ls, etc.)
+
+WHEN TO USE TOOLS:
+✓ User asks to create files → USE write_file immediately
+✓ User asks to create directories → USE bash("mkdir -p ...") immediately
+✓ User asks to see files → USE glob immediately
+✓ User asks to read code → USE read_file immediately
+✓ User asks about file content → USE read_file immediately
+✓ User asks to search → USE grep immediately
+
+EXAMPLES OF CORRECT BEHAVIOR:
+User: "Create a file hello.py"
+You: [USE write_file tool with actual content]
+Then say: "Ich habe hello.py erstellt."
+
+User: "Was ist in package.json?"
+You: [USE read_file("package.json")]
+Then explain the content.
+
+User: "Create a Flask project in a folder"
+You: [USE bash("mkdir -p project/templates project/static")]
+Then: [USE write_file for each file]
+Then say: "Ich habe das Projekt erstellt in /path/to/project"
+
+WRONG BEHAVIOR (NEVER DO THIS):
+❌ "Ich werde write_file benutzen..." → Just use it!
+❌ "bash: mkdir project" → Use the actual tool!
+❌ Describing what tools you would use → Just use them!
+
+Current working directory: ${process.cwd()}
+
+Remember: ACT, don't DESCRIBE. Use the tools immediately when needed!`;
+  }
+
   private async initialize(): Promise<void> {
     await this.modelManager.initialize();
-
-    // Set system prompt that encourages tool use
-    const systemPrompt = `You are a helpful coding assistant with access to powerful tools.
-
-LANGUAGE: Always respond in the same language as the user's input. If the user writes in German, respond in German. If in English, respond in English.
-SPRACHE: Antworte immer in der gleichen Sprache wie die Eingabe des Nutzers. Wenn der Nutzer auf Deutsch schreibt, antworte auf Deutsch.
-
-IMPORTANT: You have access to the following tools that you SHOULD use when asked about files, code, or the filesystem:
-- read_file: Read contents of files
-- write_file: Write or create files
-- edit_file: Modify existing files
-- glob: Search for files by pattern (e.g. "*.js", "src/**/*.ts")
-- grep: Search for text patterns in files
-- bash: Execute shell commands
-
-When the user asks about:
-- "What files/folders do you see?" → Use glob tool with pattern "*" or "**/*"
-- "Show me the code in X" → Use read_file tool
-- "Search for X" → Use grep tool
-- "Run command X" → Use bash tool
-
-Always prefer using tools over saying "I cannot access files". You DO have access through these tools!
-
-Current working directory: ${process.cwd()}`;
-
-    this.agent.setSystemPrompt(systemPrompt);
+    this.agent.setSystemPrompt(this.getSystemPrompt());
   }
 
   private displayWelcome(): void {
@@ -133,30 +160,7 @@ Current working directory: ${process.cwd()}`;
           this.agent = new Agent(config, this.toolManager, this.modelManager);
 
           // Re-apply the system prompt
-          const systemPrompt = `You are a helpful coding assistant with access to powerful tools.
-
-LANGUAGE: Always respond in the same language as the user's input. If the user writes in German, respond in German. If in English, respond in English.
-SPRACHE: Antworte immer in der gleichen Sprache wie die Eingabe des Nutzers. Wenn der Nutzer auf Deutsch schreibt, antworte auf Deutsch.
-
-IMPORTANT: You have access to the following tools that you SHOULD use when asked about files, code, or the filesystem:
-- read_file: Read contents of files
-- write_file: Write or create files
-- edit_file: Modify existing files
-- glob: Search for files by pattern (e.g. "*.js", "src/**/*.ts")
-- grep: Search for text patterns in files
-- bash: Execute shell commands
-
-When the user asks about:
-- "What files/folders do you see?" → Use glob tool with pattern "*" or "**/*"
-- "Show me the code in X" → Use read_file tool
-- "Search for X" → Use grep tool
-- "Run command X" → Use bash tool
-
-Always prefer using tools over saying "I cannot access files". You DO have access through these tools!
-
-Current working directory: ${process.cwd()}`;
-
-          this.agent.setSystemPrompt(systemPrompt);
+          this.agent.setSystemPrompt(this.getSystemPrompt());
 
           // Restore conversation history (excluding system message)
           const userMessages = history.filter(msg => msg.role !== 'system');
@@ -261,6 +265,11 @@ Current working directory: ${process.cwd()}`;
 
     // Process with agent
     try {
+      // Pause readline while processing to avoid interference
+      if (this.rl) {
+        this.rl.pause();
+      }
+
       const spinner = ora({
         text: chalk.cyan('Thinking...'),
         spinner: 'dots',
@@ -289,11 +298,12 @@ Current working directory: ${process.cwd()}`;
     } catch (error) {
       logger.error('Failed to process input', error);
       console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
-    }
-
-    // IMPORTANT: Always show prompt again for next input
-    if (this.rl) {
-      this.rl.prompt();
+    } finally {
+      // Resume readline and show prompt
+      if (this.rl && !(this.rl as any).closed) {
+        this.rl.resume();
+        this.rl.prompt();
+      }
     }
   }
 
@@ -314,14 +324,17 @@ Current working directory: ${process.cwd()}`;
     }, 1000);
 
     this.rl.on('line', (input) => {
-      // DON'T use await here - let it run asynchronously
-      // Otherwise readline will block during processing
-      this.processInteractiveInput(input).catch((error) => {
-        logger.error('Error processing input:', error);
-        console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
-        if (this.rl) {
-          this.rl.prompt();
-        }
+      logger.debug('Line event received', { input });
+
+      // Process in setImmediate to avoid blocking the event loop
+      setImmediate(() => {
+        this.processInteractiveInput(input).catch((error) => {
+          logger.error('Error processing input', error);
+          console.error(chalk.red(`\n❌ Error: ${formatErrorForDisplay(error)}\n`));
+          if (this.rl && !(this.rl as any).closed) {
+            this.rl.prompt();
+          }
+        });
       });
     });
 
