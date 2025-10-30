@@ -670,9 +670,7 @@ For very long tasks that might timeout, use the callback loop system.`;
 
     // Use line event listener for better compatibility
     this.rl.on('line', async (line) => {
-        console.log('[REPL] Line received:', line);
         const trimmed = line.trim();
-        console.log('[REPL] Trimmed input:', trimmed);
 
       // Handle multiline mode
       if (this.multilineMode) {
